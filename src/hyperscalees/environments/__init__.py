@@ -1,1 +1,1 @@
-from . import llm_bandits
+from . import llm_bandits, snn_mnist
