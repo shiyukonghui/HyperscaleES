@@ -1,0 +1,40 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+total_params = 134404 (含可训练 v_th)
+hidden = [128, 128, 128], batch = 12000 (0.2x train), lr = 0.03, sigma = 0.2, rank = 32, max_epochs = 1000
+初始 v_th = [0.300/0.300/0.300], 初始 tau_m = 20.000 (VTH_PER_LAYER=True, TRAIN_TAU=False)
+E0812 22:26:51.348932     534 cuda_executor.cc:1176] [0] Failed to allocate device memory of 4.00GiB (4294967296 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: ===
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+LORA UPDATE (12000, 128, 32) (12000, 784, 32)
+LORA UPDATE (12000, 128, 32) (12000, 128, 32)
+LORA UPDATE (12000, 128, 32) (12000, 128, 32)
+LORA UPDATE (12000, 10, 32) (12000, 128, 32)
+  calib: 0.899s/epoch
+  epoch    50 | val 0.098 | best_train 0.102 | v_th [0.315/0.407/0.454] | tau 20.000 | 4s
+  epoch   100 | val 0.098 | best_train 0.105 | v_th [0.362/0.421/0.692] | tau 20.000 | 6s
+  epoch   150 | val 0.098 | best_train 0.106 | v_th [0.367/0.437/0.838] | tau 20.000 | 7s
+  epoch   200 | val 0.098 | best_train 0.106 | v_th [0.344/0.515/0.909] | tau 20.000 | 9s
+  epoch   250 | val 0.098 | best_train 0.106 | v_th [0.228/0.515/0.911] | tau 20.000 | 10s
+  epoch   300 | val 0.244 | best_train 0.196 | v_th [0.155/0.465/0.995] | tau 20.000 | 12s
+  epoch   350 | val 0.344 | best_train 0.290 | v_th [0.107/0.501/1.176] | tau 20.000 | 13s
+  epoch   400 | val 0.357 | best_train 0.320 | v_th [0.104/0.509/1.328] | tau 20.000 | 15s
+  epoch   450 | val 0.356 | best_train 0.332 | v_th [0.094/0.515/1.513] | tau 20.000 | 16s
+  epoch   500 | val 0.360 | best_train 0.336 | v_th [0.094/0.510/1.591] | tau 20.000 | 18s
+  epoch   550 | val 0.357 | best_train 0.340 | v_th [0.113/0.541/1.809] | tau 20.000 | 19s
+  epoch   600 | val 0.358 | best_train 0.343 | v_th [0.134/0.478/1.899] | tau 20.000 | 21s
+  epoch   650 | val 0.371 | best_train 0.348 | v_th [0.143/0.447/2.274] | tau 20.000 | 22s
+  epoch   700 | val 0.362 | best_train 0.352 | v_th [0.148/0.435/2.524] | tau 20.000 | 24s
+  epoch   750 | val 0.372 | best_train 0.352 | v_th [0.126/0.411/2.820] | tau 20.000 | 25s
+  epoch   800 | val 0.408 | best_train 0.368 | v_th [0.140/0.399/2.918] | tau 20.000 | 27s
+  epoch   850 | val 0.425 | best_train 0.385 | v_th [0.189/0.299/3.439] | tau 20.000 | 28s
+  epoch   900 | val 0.427 | best_train 0.394 | v_th [0.186/0.327/3.521] | tau 20.000 | 30s
+  epoch   950 | val 0.434 | best_train 0.405 | v_th [0.207/0.286/3.927] | tau 20.000 | 31s
+  epoch  1000 | val 0.431 | best_train 0.411 | v_th [0.194/0.294/4.289] | tau 20.000 | 33s
+
+===== 可训练 LIF 超参实验汇总 =====
+epochs=1000 val_acc=0.431 best_train=0.411 v_th(0.300 -> [0.194/0.294/4.289]) tau(20.0 -> 20.000) (33s)
+
+results appended to results_vth_trainable_h128_128_128_perlayer.csv

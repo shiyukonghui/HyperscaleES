@@ -1,1 +1,239 @@
 [transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+total_params = 118017
+batch = 12000 (0.2x train), lr = 0.03, sigma = 0.2, max_epochs/point = 1000
+rank points: [4, 8, 16, 32, 64, 128]
+
+===== [rank sweep] rank=4 batch=12000 (lr=0.03, sigma=0.2) max_epochs=1000 =====
+LORA UPDATE (12000, 128, 4) (12000, 784, 4)
+LORA UPDATE (12000, 128, 4) (12000, 128, 4)
+LORA UPDATE (12000, 10, 4) (12000, 128, 4)
+  calib: 0.683s/epoch -> est 8193.8 ms/sample/update
+  epoch    50 | val 0.400 | best_train 0.227 | 11s
+  epoch   100 | val 0.554 | best_train 0.440 | 12s
+  epoch   150 | val 0.593 | best_train 0.513 | 13s
+  epoch   200 | val 0.604 | best_train 0.553 | 14s
+  epoch   250 | val 0.610 | best_train 0.568 | 15s
+  epoch   300 | val 0.619 | best_train 0.572 | 16s
+  epoch   350 | val 0.619 | best_train 0.578 | 17s
+  epoch   400 | val 0.612 | best_train 0.584 | 18s
+  epoch   450 | val 0.608 | best_train 0.587 | 19s
+  epoch   500 | val 0.615 | best_train 0.588 | 20s
+  epoch   550 | val 0.614 | best_train 0.592 | 22s
+  epoch   600 | val 0.609 | best_train 0.592 | 23s
+  epoch   650 | val 0.608 | best_train 0.600 | 24s
+  epoch   700 | val 0.615 | best_train 0.600 | 25s
+  epoch   750 | val 0.622 | best_train 0.600 | 26s
+  epoch   800 | val 0.616 | best_train 0.600 | 27s
+  epoch   850 | val 0.619 | best_train 0.600 | 28s
+  epoch   900 | val 0.616 | best_train 0.602 | 29s
+  epoch   950 | val 0.616 | best_train 0.608 | 30s
+  epoch  1000 | val 0.621 | best_train 0.613 | 31s
+  [rank=4] epochs=1000 val_acc=0.621 best_train=0.613 (31s)
+
+===== [rank sweep] rank=8 batch=12000 (lr=0.03, sigma=0.2) max_epochs=1000 =====
+LORA UPDATE (12000, 128, 8) (12000, 784, 8)
+LORA UPDATE (12000, 128, 8) (12000, 128, 8)
+LORA UPDATE (12000, 10, 8) (12000, 128, 8)
+  calib: 0.422s/epoch -> est 5058.7 ms/sample/update
+  epoch    50 | val 0.619 | best_train 0.611 | 5s
+  epoch   100 | val 0.620 | best_train 0.614 | 7s
+  epoch   150 | val 0.626 | best_train 0.614 | 8s
+  epoch   200 | val 0.613 | best_train 0.614 | 9s
+  epoch   250 | val 0.611 | best_train 0.614 | 10s
+  epoch   300 | val 0.622 | best_train 0.614 | 11s
+  epoch   350 | val 0.623 | best_train 0.614 | 12s
+  epoch   400 | val 0.632 | best_train 0.615 | 13s
+  epoch   450 | val 0.617 | best_train 0.615 | 14s
+  epoch   500 | val 0.617 | best_train 0.615 | 16s
+  epoch   550 | val 0.614 | best_train 0.615 | 17s
+  epoch   600 | val 0.610 | best_train 0.615 | 18s
+  epoch   650 | val 0.612 | best_train 0.615 | 19s
+  epoch   700 | val 0.618 | best_train 0.615 | 20s
+  epoch   750 | val 0.624 | best_train 0.615 | 21s
+  epoch   800 | val 0.611 | best_train 0.615 | 22s
+  epoch   850 | val 0.625 | best_train 0.615 | 23s
+  epoch   900 | val 0.620 | best_train 0.615 | 25s
+  epoch   950 | val 0.620 | best_train 0.615 | 26s
+  epoch  1000 | val 0.622 | best_train 0.615 | 27s
+  [rank=8] epochs=1000 val_acc=0.622 best_train=0.615 (27s)
+
+===== [rank sweep] rank=16 batch=12000 (lr=0.03, sigma=0.2) max_epochs=1000 =====
+LORA UPDATE (12000, 128, 16) (12000, 784, 16)
+LORA UPDATE (12000, 128, 16) (12000, 128, 16)
+LORA UPDATE (12000, 10, 16) (12000, 128, 16)
+  calib: 0.431s/epoch -> est 5168.3 ms/sample/update
+  epoch    50 | val 0.620 | best_train 0.617 | 6s
+  epoch   100 | val 0.623 | best_train 0.617 | 7s
+  epoch   150 | val 0.620 | best_train 0.617 | 8s
+  epoch   200 | val 0.618 | best_train 0.617 | 9s
+  epoch   250 | val 0.617 | best_train 0.617 | 11s
+  epoch   300 | val 0.610 | best_train 0.617 | 12s
+  epoch   350 | val 0.614 | best_train 0.617 | 13s
+  epoch   400 | val 0.619 | best_train 0.617 | 14s
+  epoch   450 | val 0.608 | best_train 0.617 | 16s
+  epoch   500 | val 0.617 | best_train 0.617 | 17s
+  epoch   550 | val 0.617 | best_train 0.617 | 18s
+  epoch   600 | val 0.620 | best_train 0.617 | 19s
+  epoch   650 | val 0.614 | best_train 0.619 | 21s
+  epoch   700 | val 0.628 | best_train 0.619 | 22s
+  epoch   750 | val 0.632 | best_train 0.619 | 23s
+  epoch   800 | val 0.632 | best_train 0.619 | 24s
+  epoch   850 | val 0.643 | best_train 0.624 | 26s
+  epoch   900 | val 0.655 | best_train 0.629 | 27s
+  epoch   950 | val 0.649 | best_train 0.632 | 28s
+  epoch  1000 | val 0.649 | best_train 0.639 | 29s
+  [rank=16] epochs=1000 val_acc=0.649 best_train=0.639 (29s)
+
+===== [rank sweep] rank=32 batch=12000 (lr=0.03, sigma=0.2) max_epochs=1000 =====
+E0812 21:49:54.088003     500 cuda_executor.cc:1176] [0] Failed to allocate device memory of 4.00GiB (4294967296 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+LORA UPDATE (12000, 128, 32) (12000, 784, 32)
+LORA UPDATE (12000, 128, 32) (12000, 128, 32)
+LORA UPDATE (12000, 10, 32) (12000, 128, 32)
+  calib: 0.478s/epoch -> est 5732.5 ms/sample/update
+  epoch    50 | val 0.644 | best_train 0.635 | 6s
+  epoch   100 | val 0.647 | best_train 0.640 | 8s
+  epoch   150 | val 0.642 | best_train 0.646 | 9s
+  epoch   200 | val 0.632 | best_train 0.646 | 10s
+  epoch   250 | val 0.640 | best_train 0.647 | 12s
+  epoch   300 | val 0.640 | best_train 0.647 | 13s
+  epoch   350 | val 0.649 | best_train 0.648 | 15s
+  epoch   400 | val 0.673 | best_train 0.656 | 16s
+  epoch   450 | val 0.692 | best_train 0.666 | 17s
+  epoch   500 | val 0.691 | best_train 0.670 | 19s
+  epoch   550 | val 0.700 | best_train 0.681 | 20s
+  epoch   600 | val 0.706 | best_train 0.687 | 22s
+  epoch   650 | val 0.718 | best_train 0.692 | 23s
+  epoch   700 | val 0.727 | best_train 0.695 | 25s
+  epoch   750 | val 0.721 | best_train 0.698 | 26s
+  epoch   800 | val 0.725 | best_train 0.700 | 28s
+  epoch   850 | val 0.736 | best_train 0.708 | 29s
+  epoch   900 | val 0.729 | best_train 0.708 | 30s
+  epoch   950 | val 0.734 | best_train 0.708 | 32s
+  epoch  1000 | val 0.729 | best_train 0.708 | 33s
+  [rank=32] epochs=1000 val_acc=0.729 best_train=0.708 (33s)
+
+===== [rank sweep] rank=64 batch=12000 (lr=0.03, sigma=0.2) max_epochs=1000 =====
+E0812 21:50:27.413168     489 cuda_executor.cc:1176] [0] Failed to allocate device memory of 8.00GiB (8589934592 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0812 21:50:27.414225     489 cuda_executor.cc:1176] [0] Failed to allocate device memory of 7.20GiB (7730940928 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0812 21:50:27.415267     489 cuda_executor.cc:1176] [0] Failed to allocate device memory of 6.48GiB (6957846528 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0812 21:50:27.416182     489 cuda_executor.cc:1176] [0] Failed to allocate device memory of 5.83GiB (6262061568 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0812 21:50:27.417036     489 cuda_executor.cc:1176] [0] Failed to allocate device memory of 5.25GiB (5635855360 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0812 21:50:27.418119     489 cuda_executor.cc:1176] [0] Failed to allocate device memory of 4.72GiB (5072269824 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0812 21:50:27.419164     489 cuda_executor.cc:1176] [0] Failed to allocate device memory of 4.25GiB (4565042688 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+LORA UPDATE (12000, 128, 64) (12000, 784, 64)
+LORA UPDATE (12000, 128, 64) (12000, 128, 64)
+LORA UPDATE (12000, 10, 64) (12000, 128, 64)
+  calib: 0.537s/epoch -> est 6439.1 ms/sample/update
+  epoch    50 | val 0.722 | best_train 0.706 | 7s
+  epoch   100 | val 0.717 | best_train 0.706 | 9s
+  epoch   150 | val 0.714 | best_train 0.706 | 11s
+  epoch   200 | val 0.721 | best_train 0.706 | 13s
+  epoch   250 | val 0.717 | best_train 0.706 | 15s
+  epoch   300 | val 0.710 | best_train 0.708 | 17s
+  epoch   350 | val 0.727 | best_train 0.708 | 19s
+  epoch   400 | val 0.708 | best_train 0.709 | 21s
+  epoch   450 | val 0.711 | best_train 0.714 | 23s
+  epoch   500 | val 0.726 | best_train 0.714 | 25s
+  epoch   550 | val 0.739 | best_train 0.714 | 27s
+  epoch   600 | val 0.742 | best_train 0.718 | 29s
+  epoch   650 | val 0.744 | best_train 0.724 | 31s
+  epoch   700 | val 0.751 | best_train 0.724 | 32s
+  epoch   750 | val 0.736 | best_train 0.724 | 34s
+  epoch   800 | val 0.743 | best_train 0.727 | 36s
+  epoch   850 | val 0.753 | best_train 0.727 | 38s
+  epoch   900 | val 0.752 | best_train 0.727 | 40s
+  epoch   950 | val 0.756 | best_train 0.727 | 42s
+  epoch  1000 | val 0.759 | best_train 0.728 | 44s
+  [rank=64] epochs=1000 val_acc=0.759 best_train=0.728 (44s)
+
+===== [rank sweep] rank=128 batch=12000 (lr=0.03, sigma=0.2) max_epochs=1000 =====
+E0812 21:51:11.748505     502 cuda_executor.cc:1176] [0] Failed to allocate device memory of 6.37GiB (6838812672 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0812 21:51:11.749402     502 cuda_executor.cc:1176] [0] Failed to allocate device memory of 5.73GiB (6154931200 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+W0812 21:51:11.749576     502 bfc_allocator.cc:363] Allocator (GPU_0_bfc) ran out of memory trying to allocate 5.23GiB from the lower end with freed_by_count=0. The caller indicates that this is not a failure, but this may mean that there could be performance gains if more memory were available.
+E0812 21:51:11.750406     414 config_assigner.cc:478] Could not get config for HLO: %gemm_fusion_dot_general.10 = f32[12000,8,128]{2,1,0} fusion(%x.1, %loop_select_fusion), kind=kCustom, calls=
+(parameter_0.1: f32[12000,8,784], parameter_1.1: f32[12000,912,128]) -> f32[12000,8,128] {
+  %parameter_1.1 = f32[12000,912,128]{2,1,0} parameter(1)
+  %constant.1855 = f32[] constant(1.41421354), metadata={op_name="jit(<lambda>)/vmap(vmap(jit(_normal)))/jit(_normal_real)" stack_frame_id=73}
+  %mul.120 = f32[12000,912,128]{2,1,0} broadcast(%constant.1855), dimensions={}, metadata={op_name="jit(<lambda>)/vmap(vmap(jit(_normal)))/jit(_normal_real)/mul" stack_frame_id=73}
+  %mul.121 = f32[12000,912,128]{2,1,0} multiply(%parameter_1.1, %mul.120), metadata={op_name="jit(<lambda>)/vmap(vmap(jit(_normal)))/jit(_normal_real)/mul" stack_frame_id=73}
+  %slice.0 = f32[12000,784,128]{2,1,0} slice(%mul.121), slice={[0:12000], [0:784], [0:128]}, metadata={op_name="jit(<lambda>)/vmap(vmap())/slice" stack_frame_id=74}
+  %parameter_0.1 = f32[12000,8,784]{2,1,0} parameter(0)
+  %dot.12 = f32[12000,128,8]{1,2,0} dot(%slice.0, %parameter_0.1), lhs_batch_dims={0}, lhs_contracting_dims={1}, rhs_batch_dims={0}, rhs_contracting_dims={2}, metadata={op_name="jit(<lambda>)/vmap(vmap())/dot_general" stack_frame_id=75}
+  ROOT %bitcast.51 = f32[12000,8,128]{2,1,0} bitcast(%dot.12), metadata={op_name="jit(<lambda>)/vmap(vmap())/dot_general" stack_frame_id=75}
+}, metadata={op_name="jit(<lambda>)/vmap(vmap())/dot_general" stack_frame_id=75}, backend_config={"operation_queue_id":"0","fusion_backend_config":{"kind":"__triton_gemm"},"force_earliest_schedule":false,"reification_cost":[],"device_type":"DEVICE_TYPE_INVALID"}. Status: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 5.23GiB. [tf-allocator-allocation-error='']
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/integrations/tf_allocator_adapter.cc:269
+external/xla/xla/stream_executor/integrations/tf_allocator_adapter.cc:192
+external/xla/xla/stream_executor/gpu/redzone_allocator.cc:93
+external/xla/xla/stream_executor/gpu/redzone_allocator.cc:262
+external/xla/xla/service/gpu/autotuning/redzone_buffers.cc:107
+external/xla/xla/service/gpu/autotuning/redzone_buffers.cc:89
+external/xla/xla/backends/gpu/autotuner/gpu_profiler.cc:269
+external/xla/xla/backends/autotuner/config_runner.cc:69
+external/xla/xla/backends/autotuner/config_assigner.cc:417
+
+Traceback (most recent call last):
+  File "/mnt/f/PythonProject/HyperscaleES/exp_rank_sweep.py", line 198, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/f/PythonProject/HyperscaleES/exp_rank_sweep.py", line 181, in main
+    epochs, last_val, best, elapsed, cal_s = run_point(rank, num_envs, MAX_EPOCHS)
+                                             ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/f/PythonProject/HyperscaleES/exp_rank_sweep.py", line 142, in run_point
+    _, acc = step(e)
+             ~~~~^^^
+  File "/mnt/f/PythonProject/HyperscaleES/exp_rank_sweep.py", line 120, in step
+    logits = jit_forward(noiser_params, params, it, spikes)
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 5.23GiB. [tf-allocator-allocation-error='']
+--------------------
+For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.

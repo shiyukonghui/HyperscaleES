@@ -409,6 +409,147 @@ val 在 0.753~0.776 之间随机波动，不再上升。）
 wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS='--xla_gpu_autotune_level=1' /root/hyperscalees-venv/bin/python exp_batch_sweep.py"
 ```
 
+### 7.11 LoRA rank 单变量扫描：确定收益边际点（GPU / WSL2，2026-08）
+
+**背景**：7.10 发现精度极限后，检验"LoRA rank（更新子空间维度）"是否限制学习能力。
+固定 batch=0.2×训练集（12000）、固定 LR=0.03、固定 1000 epochs，仅 rank 作为单变量扫描
+（`exp_rank_sweep.py`）。注意 EggRoll 用 `sigma/sqrt(rank)` 归一化扰动，rank 改变同时影响
+扰动幅度，属完整单变量。
+
+**配置**：T=8, hidden=[128,128], sigma=0.2, lr=0.03, seed=0, batch=12000, 每点 1000 epochs。
+
+| rank | val_acc | best_train | 用时(s) | 较上一档提升 |
+|---|---|---|---|---|
+| 4 | 0.621 | 0.613 | 31 | — |
+| 8 | 0.622 | 0.615 | 27 | +0.1pp（基本持平） |
+| 16 | 0.649 | 0.639 | 29 | +2.7pp |
+| 32 | **0.729** | 0.708 | 33 | **+8.0pp（增益最大）** |
+| 64 | 0.759 | 0.728 | 44 | +3.0pp（明显收窄） |
+| 128 | OOM | — | — | 24GB 显存不足（分配 5.23GiB 失败） |
+
+**结论：收益边际点在 rank≈32。**
+
+1. **低 rank 区（4~8）无效**：rank 翻倍但 val 几乎不动（0.621→0.622）——LoRA 子空间过小是瓶颈。
+2. **中 rank 区（8→32）收益最大**：8→16（+2.7pp）、16→32（+8pp），rank=32 是边际增益最大的点。
+3. **高 rank 区（32→64）收益递减**：翻倍仅 +3pp，进入收益递减段。
+4. **内存成本线性暴涨**：EggRoll 扰动张量 ≈ (batch, 784, rank)×T，rank 翻倍显存翻倍；
+   rank=128 在 batch=12000 下爆 24GB 显存。收益递增但内存线性增长的矛盾决定了 rank 有实际上限。
+
+**工程建议**：rank=32 为"性价比平衡点"（收益曲线上拐点前增益最大）；若显存充足（多卡/更大显存）
+rank=64 可再小幅抬升，但性价比明显下降。
+
+**复现**（WSL2 / GPU；batch=0.2×60000=12000，每点 1000 epochs，默认 rank 4~128）：
+
+```bash
+wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS='--xla_gpu_autotune_level=1' /root/hyperscalees-venv/bin/python exp_rank_sweep.py"
+```
+
+### 7.12 可训练阈值电压 v_th（GPU / WSL2，2026-08）
+
+**背景**：7.11 确定 rank=32 后，尝试把 LIF 阈值电压 v_th 从"冻结超参"改为"可训练参数"，
+检验其是否限制学习能力（此前 `tau_m`/`v_th` 固定不参与 ES 更新）。
+
+**实现细节**（新增 `exp_vth_trainable.py`，内嵌 `TrainableVthSNN`，未改动 `snn.py`）：
+- 把 `v_th` 从 `frozen_params` 移入可训练 `params` 树，作为 PARAM 类型参与 ES 全参更新；
+  `frozen_params` 仅保留 `tau_m`。
+- **softplus 参数化保证恒正**：params 中存原始值 `raw`（初始 `log(exp(0.3)-1)`，即实际阈值 0.3），
+  前向中实际阈值 = `softplus(raw)`。避免 ES 把阈值推向负值导致神经元疯狂发放/网络失效。
+- 其余结构与 SNNModel 完全一致：fc1/fc2/fc3 走 LoRA（rank 限制）、out_gain 全参更新。
+
+**配置**：T=8, hidden=[128,128], sigma=0.2, lr=0.03, seed=0, batch=12000, rank=32, 1000 epochs。
+
+| 指标 | 固定 v_th=0.3（7.11 同配置） | 可训练 v_th |
+|---|---|---|
+| val_acc | 0.729 | **0.757（+2.8pp）** |
+| best_train | 0.708 | 0.712 |
+| v_th | 0.3（固定） | 0.300 → **0.427** |
+
+**v_th 调节轨迹**（每 50 epoch 采样）：早期先降到 0.18~0.28（阈值降低、神经元更易发放，加速启动），
+中后期逐步抬升到 0.36~0.44，最终收敛于 0.427——ES 找到了比人工固定 0.3 更优的阈值，并
+带来 +2.8pp 的精度提升，验证 v_th 确实是可优化的自由度。
+
+**结论**：把 SNN 的 LIF 超参（v_th 等）纳入可训练参数是有效的突破方向之一（呼应 7.10 突破方向 5）；
+softplus 参数化是必要的稳定性保障。后续可进一步把 `tau_m` 也纳入可训练参数、或给 v_th 施加
+有界先验（如 clip 到合理区间）验证鲁棒性。
+
+**复现**（WSL2 / GPU；配置见脚本顶部常量）：
+
+```bash
+wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS='--xla_gpu_autotune_level=1' /root/hyperscalees-venv/bin/python exp_vth_trainable.py"
+```
+
+### 7.13 可训练 tau_m 的负面结论（GPU / WSL2，2026-08）
+
+**背景**：7.12 验证 v_th 可训练有效（+2.8pp）后，尝试把 tau_m 也纳入可训练参数，
+检验能否进一步提精度。`exp_vth_trainable.py` 增加 `TRAIN_TAU` 开关（True/False），
+权重矩阵初始化与 7.12 完全一致（同一随机 key 派生），保证对比公平。
+
+**配置**：T=8, hidden=[128,128], sigma=0.2, lr=0.03, seed=0, batch=12000, rank=32, 1000 epochs。
+
+| 配置 | val_acc | best_train | v_th | tau_m |
+|---|---|---|---|---|
+| 固定 v_th/tau（7.11 同配置） | 0.729 | 0.708 | 0.3 | 20 |
+| 仅 v_th 可训练（7.12） | **0.757** | 0.712 | 0.300→0.427 | 20（固定） |
+| v_th + tau_m 可训练 | 0.744 | 0.708 | 0.300→0.399 | 20.0→19.68 |
+
+**结论：tau_m 可训练没有带来提升，反而使 val_acc 回落 1.3pp（0.757 → 0.744）。**
+
+1. **tau 几乎未被调节**：1000 epochs 内 tau 仅在 19.7~20.4 之间小幅徘徊，最终 19.68
+   （变化 <2%）——ES 没有动力移动 tau，说明在当前任务下 tau 不是有效自由度。
+2. **多一个参数反而引入优化噪声**：tau 作为 PARAM 全参扰动，其随机扰动与 AdamW 状态
+   会干扰 v_th / 权重的更新（0.757 → 0.744）。
+3. **机理解释**：LIF 泄漏项 `v += (dt/tau)·(−v + I)`，dt/tau = 0.05，在 T=8 的短时间窗口内
+   衰减影响很小，tau=20 已处于合理区；它不像 v_th 那样直接控制发放门限，可优化空间有限。
+
+**工程建议**：维持 7.12 的"仅 v_th 可训练"方案（单点最优 0.757），tau_m 保持冻结；
+后续如需再探，可考虑给 tau 施加更大初始扰动/更长时间训练，但当前证据表明收益有限。
+
+**复现**（WSL2 / GPU；`TRAIN_TAU` 开关在 `exp_vth_trainable.py` 顶部）：
+
+```bash
+wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS='--xla_gpu_autotune_level=1' /root/hyperscalees-venv/bin/python exp_vth_trainable.py"
+```
+
+### 7.14 逐层独立 v_th：缓解深层网络退化（GPU / WSL2，2026-08）
+
+**背景**：7.12 验证 v_th 可训练有效（2 层 +2.8pp），但直接把网络加深到 3 层（[128,128,128]）
+后训练完全退化（val ≈ 0.098，接近随机）。分析主因是**全局单一 v_th 无法匹配各层电流量级**：
+v_th 是全部 LIF 层共享同一个可训练标量，而第 2/3 层输入是上一层脉冲率（量级与第 1 层连续
+输入差异大），同一阈值不可能同时适配各层。据此实现"逐层独立 v_th"方案验证。
+
+**实现细节**（`exp_vth_trainable.py` 增加 `VTH_PER_LAYER` 开关，True 时生效）：
+- 每层一个可训练阈值参数 `v_th1..v_thN`（PARAM 类型，softplus 参数化恒正，各层初始 0.3）。
+- 前向中每层 LIF 使用自己的阈值；`VTH_PER_LAYER=False` 时回到全局共享（复现 7.12/7.13）。
+
+**配置**：T=8, hidden=[128,128,128], sigma=0.2, lr=0.03, seed=0, batch=12000, rank=32, 1000 epochs。
+
+| 配置 | val_acc | best_train | v_th 终值 |
+|---|---|---|---|
+| 2 层 [128,128] + 全局 v_th（7.12） | **0.757** | 0.712 | 0.427 |
+| 3 层 + 全局 v_th（7.13 后续） | 0.098（随机） | 0.105 | 1.44（单值） |
+| **3 层 + 逐层 v_th（本次）** | 0.431 | 0.411 | [0.194 / 0.294 / 4.289] |
+
+**结论：逐层独立 v_th 部分解决了深层网络的退化问题，但仍未超过 2 层。**
+
+1. **恢复学习能力**：从完全随机（0.098）恢复到 0.431，验证了"全局单阈值不匹配各层电流量级"
+   是 3 层失效的主因。
+2. **各层阈值自然分化**：第 1 层 0.19（输入电流大 → 阈值调低、易发放）、第 2 层 0.29、
+   第 3 层 4.29（阈值被推到极高，工作在近饱和抑制态）——每层 ES 找到不同工作点。
+3. **仍未超过 2 层**（0.431 vs 0.757）：1000 epochs 内 3 层收敛更慢（参数更多、脉冲链中仍有
+   信号衰减），且日志显示训练仍处上升趋势（epoch 950 → 0.434，未到平台）。
+
+**工程建议**：
+- 逐层 v_th 是加深网络的前提，但单靠它不足以让 3 层超过 2 层；可尝试延长训练（≥3000 epochs）
+  或引入层间归一化/残差连接稳定脉冲传播。
+- 第 3 层阈值 4.29 表明深层电流量级被显著放大，后续可考虑按层自适应 v_th 初始化（呼应 6.2
+  的"阈值需与输入电流量级匹配"教训）。
+
+**复现**（WSL2 / GPU；`VTH_PER_LAYER`/`HIDDEN`/`TRAIN_TAU` 开关在 `exp_vth_trainable.py` 顶部）：
+
+```bash
+wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS='--xla_gpu_autotune_level=1' /root/hyperscalees-venv/bin/python exp_vth_trainable.py"
+```
+
 ## 8. 复现 / 使用方法
 
 ```bash

@@ -188,8 +188,8 @@ def main():
 
     print("\n===== LoRA rank 扫描汇总（固定 batch/LR/epoch） =====")
     print(f"{'rank':>6} | {'batch':>6} | {'epochs':>6} | {'val_acc':>8} | {'best_train':>10} | {'用时(s)':>8}")
-    for rank, num_envs, epochs, last_val, best, elapsed in results:
-        print(f"{rank:6d} | {num_envs:6d} | {epochs:6d} | {last_val:8.3f} | "
+    for rank_r, batch_n, epochs, last_val, best, elapsed in results:
+        print(f"{rank_r:6d} | {batch_n:6d} | {epochs:6d} | {last_val:8.3f} | "
               f"{best:10.3f} | {elapsed:8.0f}")
     print(f"\nresults appended to {CSV_PATH}")
 
