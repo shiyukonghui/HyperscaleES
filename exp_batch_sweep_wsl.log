@@ -1,0 +1,406 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+total_params = 118017
+points = 5, max_epochs/point = 4000
+batch points (ratio -> batch): [(0.1, 6000), (0.2, 12000), (0.3, 18000), (0.4, 24000), (0.5, 30000)]
+
+===== [batch sweep] ratio=0.100 batch=6000 (0.100x train) max_epochs=4000 =====
+LORA UPDATE (6000, 128, 8) (6000, 784, 8)
+LORA UPDATE (6000, 128, 8) (6000, 128, 8)
+LORA UPDATE (6000, 10, 8) (6000, 128, 8)
+  calib: 0.689s/epoch -> est 4136.7 ms/sample/update
+  epoch    50 | val 0.260 | best_train 0.163 | 11s
+  epoch   100 | val 0.373 | best_train 0.282 | 11s
+  epoch   150 | val 0.454 | best_train 0.369 | 12s
+  epoch   200 | val 0.550 | best_train 0.447 | 12s
+  epoch   250 | val 0.606 | best_train 0.516 | 13s
+  epoch   300 | val 0.652 | best_train 0.569 | 13s
+  epoch   350 | val 0.672 | best_train 0.601 | 14s
+  epoch   400 | val 0.692 | best_train 0.632 | 15s
+  epoch   450 | val 0.688 | best_train 0.633 | 15s
+  epoch   500 | val 0.709 | best_train 0.645 | 16s
+  epoch   550 | val 0.711 | best_train 0.653 | 16s
+  epoch   600 | val 0.726 | best_train 0.661 | 17s
+  epoch   650 | val 0.728 | best_train 0.682 | 17s
+  epoch   700 | val 0.703 | best_train 0.682 | 18s
+  epoch   750 | val 0.695 | best_train 0.682 | 18s
+  epoch   800 | val 0.706 | best_train 0.682 | 19s
+  epoch   850 | val 0.699 | best_train 0.682 | 19s
+  epoch   900 | val 0.716 | best_train 0.682 | 20s
+  epoch   950 | val 0.714 | best_train 0.682 | 20s
+  epoch  1000 | val 0.704 | best_train 0.682 | 21s
+  epoch  1050 | val 0.695 | best_train 0.685 | 21s
+  epoch  1100 | val 0.703 | best_train 0.686 | 22s
+  epoch  1150 | val 0.710 | best_train 0.688 | 22s
+  epoch  1200 | val 0.706 | best_train 0.691 | 23s
+  epoch  1250 | val 0.703 | best_train 0.691 | 23s
+  epoch  1300 | val 0.698 | best_train 0.691 | 24s
+  epoch  1350 | val 0.703 | best_train 0.691 | 25s
+  epoch  1400 | val 0.712 | best_train 0.698 | 25s
+  epoch  1450 | val 0.695 | best_train 0.698 | 26s
+  epoch  1500 | val 0.694 | best_train 0.698 | 26s
+  epoch  1550 | val 0.694 | best_train 0.698 | 27s
+  epoch  1600 | val 0.697 | best_train 0.698 | 28s
+  epoch  1650 | val 0.693 | best_train 0.698 | 28s
+  epoch  1700 | val 0.699 | best_train 0.698 | 29s
+  epoch  1750 | val 0.713 | best_train 0.698 | 29s
+  epoch  1800 | val 0.709 | best_train 0.698 | 30s
+  epoch  1850 | val 0.705 | best_train 0.698 | 30s
+  epoch  1900 | val 0.705 | best_train 0.698 | 31s
+  epoch  1950 | val 0.695 | best_train 0.698 | 31s
+  epoch  2000 | val 0.707 | best_train 0.698 | 32s
+  epoch  2050 | val 0.703 | best_train 0.698 | 32s
+  epoch  2100 | val 0.694 | best_train 0.698 | 33s
+  epoch  2150 | val 0.710 | best_train 0.698 | 34s
+  epoch  2200 | val 0.699 | best_train 0.698 | 34s
+  epoch  2250 | val 0.703 | best_train 0.701 | 35s
+  epoch  2300 | val 0.706 | best_train 0.701 | 35s
+  epoch  2350 | val 0.705 | best_train 0.701 | 36s
+  epoch  2400 | val 0.706 | best_train 0.701 | 36s
+  epoch  2450 | val 0.702 | best_train 0.701 | 37s
+  epoch  2500 | val 0.702 | best_train 0.701 | 37s
+  epoch  2550 | val 0.700 | best_train 0.701 | 38s
+  epoch  2600 | val 0.691 | best_train 0.701 | 39s
+  epoch  2650 | val 0.690 | best_train 0.701 | 39s
+  epoch  2700 | val 0.703 | best_train 0.701 | 40s
+  epoch  2750 | val 0.706 | best_train 0.701 | 40s
+  epoch  2800 | val 0.699 | best_train 0.701 | 41s
+  epoch  2850 | val 0.713 | best_train 0.701 | 41s
+  epoch  2900 | val 0.707 | best_train 0.704 | 42s
+  epoch  2950 | val 0.711 | best_train 0.704 | 42s
+  epoch  3000 | val 0.718 | best_train 0.705 | 43s
+  epoch  3050 | val 0.710 | best_train 0.705 | 43s
+  epoch  3100 | val 0.721 | best_train 0.705 | 44s
+  epoch  3150 | val 0.718 | best_train 0.705 | 45s
+  epoch  3200 | val 0.717 | best_train 0.705 | 45s
+  epoch  3250 | val 0.696 | best_train 0.705 | 46s
+  epoch  3300 | val 0.701 | best_train 0.705 | 46s
+  epoch  3350 | val 0.686 | best_train 0.705 | 47s
+  epoch  3400 | val 0.702 | best_train 0.705 | 47s
+  epoch  3450 | val 0.692 | best_train 0.705 | 48s
+  epoch  3500 | val 0.709 | best_train 0.705 | 49s
+  epoch  3550 | val 0.704 | best_train 0.705 | 49s
+  epoch  3600 | val 0.701 | best_train 0.705 | 50s
+  epoch  3650 | val 0.703 | best_train 0.705 | 50s
+  epoch  3700 | val 0.698 | best_train 0.705 | 51s
+  epoch  3750 | val 0.708 | best_train 0.705 | 52s
+  epoch  3800 | val 0.704 | best_train 0.705 | 52s
+  epoch  3850 | val 0.706 | best_train 0.705 | 53s
+  epoch  3900 | val 0.698 | best_train 0.705 | 53s
+  epoch  3950 | val 0.707 | best_train 0.707 | 54s
+  epoch  4000 | val 0.699 | best_train 0.708 | 54s
+  [0.100 x 6000] epochs=4000 val_acc=0.699 best_train=0.708 (54s)
+
+===== [batch sweep] ratio=0.200 batch=12000 (0.200x train) max_epochs=4000 =====
+LORA UPDATE (12000, 128, 8) (12000, 784, 8)
+LORA UPDATE (12000, 128, 8) (12000, 128, 8)
+LORA UPDATE (12000, 10, 8) (12000, 128, 8)
+  calib: 0.628s/epoch -> est 7530.0 ms/sample/update
+  epoch    50 | val 0.697 | best_train 0.701 | 7s
+  epoch   100 | val 0.690 | best_train 0.704 | 8s
+  epoch   150 | val 0.704 | best_train 0.708 | 10s
+  epoch   200 | val 0.701 | best_train 0.708 | 11s
+  epoch   250 | val 0.704 | best_train 0.708 | 12s
+  epoch   300 | val 0.703 | best_train 0.708 | 13s
+  epoch   350 | val 0.699 | best_train 0.708 | 14s
+  epoch   400 | val 0.714 | best_train 0.715 | 15s
+  epoch   450 | val 0.711 | best_train 0.715 | 16s
+  epoch   500 | val 0.709 | best_train 0.715 | 17s
+  epoch   550 | val 0.702 | best_train 0.715 | 19s
+  epoch   600 | val 0.708 | best_train 0.715 | 20s
+  epoch   650 | val 0.704 | best_train 0.720 | 21s
+  epoch   700 | val 0.713 | best_train 0.720 | 22s
+  epoch   750 | val 0.718 | best_train 0.720 | 23s
+  epoch   800 | val 0.713 | best_train 0.720 | 24s
+  epoch   850 | val 0.716 | best_train 0.720 | 25s
+  epoch   900 | val 0.708 | best_train 0.720 | 26s
+  epoch   950 | val 0.710 | best_train 0.720 | 27s
+  epoch  1000 | val 0.717 | best_train 0.720 | 28s
+  epoch  1050 | val 0.709 | best_train 0.720 | 29s
+  epoch  1100 | val 0.704 | best_train 0.720 | 30s
+  epoch  1150 | val 0.717 | best_train 0.720 | 31s
+  epoch  1200 | val 0.715 | best_train 0.720 | 33s
+  epoch  1250 | val 0.722 | best_train 0.720 | 34s
+  epoch  1300 | val 0.706 | best_train 0.720 | 35s
+  epoch  1350 | val 0.707 | best_train 0.720 | 36s
+  epoch  1400 | val 0.709 | best_train 0.720 | 37s
+  epoch  1450 | val 0.707 | best_train 0.720 | 38s
+  epoch  1500 | val 0.719 | best_train 0.720 | 39s
+  epoch  1550 | val 0.717 | best_train 0.720 | 40s
+  epoch  1600 | val 0.721 | best_train 0.720 | 41s
+  epoch  1650 | val 0.710 | best_train 0.720 | 42s
+  epoch  1700 | val 0.717 | best_train 0.720 | 43s
+  epoch  1750 | val 0.727 | best_train 0.720 | 44s
+  epoch  1800 | val 0.729 | best_train 0.720 | 45s
+  epoch  1850 | val 0.728 | best_train 0.720 | 46s
+  epoch  1900 | val 0.717 | best_train 0.720 | 47s
+  epoch  1950 | val 0.722 | best_train 0.720 | 48s
+  epoch  2000 | val 0.724 | best_train 0.720 | 49s
+  epoch  2050 | val 0.727 | best_train 0.720 | 51s
+  epoch  2100 | val 0.723 | best_train 0.720 | 52s
+  epoch  2150 | val 0.719 | best_train 0.720 | 53s
+  epoch  2200 | val 0.717 | best_train 0.720 | 54s
+  epoch  2250 | val 0.713 | best_train 0.720 | 55s
+  epoch  2300 | val 0.722 | best_train 0.720 | 56s
+  epoch  2350 | val 0.714 | best_train 0.722 | 57s
+  epoch  2400 | val 0.721 | best_train 0.722 | 58s
+  epoch  2450 | val 0.729 | best_train 0.722 | 59s
+  epoch  2500 | val 0.729 | best_train 0.725 | 60s
+  epoch  2550 | val 0.715 | best_train 0.725 | 61s
+  epoch  2600 | val 0.719 | best_train 0.725 | 62s
+  epoch  2650 | val 0.729 | best_train 0.728 | 63s
+  epoch  2700 | val 0.727 | best_train 0.728 | 64s
+  epoch  2750 | val 0.739 | best_train 0.728 | 65s
+  epoch  2800 | val 0.735 | best_train 0.728 | 66s
+  epoch  2850 | val 0.730 | best_train 0.728 | 67s
+  epoch  2900 | val 0.723 | best_train 0.728 | 68s
+  epoch  2950 | val 0.717 | best_train 0.728 | 69s
+  epoch  3000 | val 0.721 | best_train 0.728 | 70s
+  epoch  3050 | val 0.724 | best_train 0.728 | 71s
+  epoch  3100 | val 0.729 | best_train 0.728 | 72s
+  epoch  3150 | val 0.716 | best_train 0.728 | 74s
+  epoch  3200 | val 0.725 | best_train 0.728 | 75s
+  epoch  3250 | val 0.727 | best_train 0.728 | 76s
+  epoch  3300 | val 0.723 | best_train 0.728 | 77s
+  epoch  3350 | val 0.722 | best_train 0.728 | 78s
+  epoch  3400 | val 0.721 | best_train 0.728 | 79s
+  epoch  3450 | val 0.712 | best_train 0.728 | 80s
+  epoch  3500 | val 0.720 | best_train 0.728 | 81s
+  epoch  3550 | val 0.714 | best_train 0.728 | 82s
+  epoch  3600 | val 0.730 | best_train 0.728 | 83s
+  epoch  3650 | val 0.721 | best_train 0.728 | 84s
+  epoch  3700 | val 0.731 | best_train 0.728 | 85s
+  epoch  3750 | val 0.729 | best_train 0.728 | 86s
+  epoch  3800 | val 0.731 | best_train 0.728 | 87s
+  epoch  3850 | val 0.726 | best_train 0.728 | 88s
+  epoch  3900 | val 0.726 | best_train 0.728 | 90s
+  epoch  3950 | val 0.734 | best_train 0.728 | 91s
+  epoch  4000 | val 0.746 | best_train 0.730 | 92s
+  [0.200 x 12000] epochs=4000 val_acc=0.746 best_train=0.730 (92s)
+
+===== [batch sweep] ratio=0.300 batch=18000 (0.300x train) max_epochs=4000 =====
+LORA UPDATE (18000, 128, 8) (18000, 784, 8)
+LORA UPDATE (18000, 128, 8) (18000, 128, 8)
+LORA UPDATE (18000, 10, 8) (18000, 128, 8)
+  calib: 0.594s/epoch -> est 10690.5 ms/sample/update
+  epoch    50 | val 0.736 | best_train 0.726 | 7s
+  epoch   100 | val 0.733 | best_train 0.729 | 9s
+  epoch   150 | val 0.732 | best_train 0.729 | 10s
+  epoch   200 | val 0.738 | best_train 0.732 | 12s
+  epoch   250 | val 0.736 | best_train 0.732 | 13s
+  epoch   300 | val 0.732 | best_train 0.732 | 15s
+  epoch   350 | val 0.738 | best_train 0.733 | 16s
+  epoch   400 | val 0.742 | best_train 0.733 | 18s
+  epoch   450 | val 0.744 | best_train 0.733 | 19s
+  epoch   500 | val 0.740 | best_train 0.734 | 21s
+  epoch   550 | val 0.735 | best_train 0.735 | 22s
+  epoch   600 | val 0.729 | best_train 0.735 | 24s
+  epoch   650 | val 0.738 | best_train 0.735 | 25s
+  epoch   700 | val 0.732 | best_train 0.735 | 27s
+  epoch   750 | val 0.729 | best_train 0.735 | 28s
+  epoch   800 | val 0.723 | best_train 0.736 | 30s
+  epoch   850 | val 0.719 | best_train 0.736 | 31s
+  epoch   900 | val 0.727 | best_train 0.737 | 33s
+  epoch   950 | val 0.745 | best_train 0.740 | 34s
+  epoch  1000 | val 0.751 | best_train 0.740 | 36s
+  epoch  1050 | val 0.749 | best_train 0.740 | 37s
+  epoch  1100 | val 0.743 | best_train 0.740 | 39s
+  epoch  1150 | val 0.735 | best_train 0.741 | 41s
+  epoch  1200 | val 0.738 | best_train 0.741 | 42s
+  epoch  1250 | val 0.730 | best_train 0.741 | 44s
+  epoch  1300 | val 0.741 | best_train 0.741 | 45s
+  epoch  1350 | val 0.746 | best_train 0.741 | 47s
+  epoch  1400 | val 0.741 | best_train 0.741 | 48s
+  epoch  1450 | val 0.750 | best_train 0.741 | 50s
+  epoch  1500 | val 0.736 | best_train 0.741 | 51s
+  epoch  1550 | val 0.738 | best_train 0.741 | 53s
+  epoch  1600 | val 0.741 | best_train 0.741 | 54s
+  epoch  1650 | val 0.737 | best_train 0.741 | 56s
+  epoch  1700 | val 0.735 | best_train 0.741 | 57s
+  epoch  1750 | val 0.732 | best_train 0.741 | 59s
+  epoch  1800 | val 0.730 | best_train 0.741 | 60s
+  epoch  1850 | val 0.732 | best_train 0.741 | 62s
+  epoch  1900 | val 0.739 | best_train 0.741 | 63s
+  epoch  1950 | val 0.741 | best_train 0.741 | 65s
+  epoch  2000 | val 0.740 | best_train 0.741 | 66s
+  epoch  2050 | val 0.737 | best_train 0.741 | 68s
+  epoch  2100 | val 0.748 | best_train 0.741 | 69s
+  epoch  2150 | val 0.751 | best_train 0.741 | 71s
+  epoch  2200 | val 0.750 | best_train 0.741 | 72s
+  epoch  2250 | val 0.750 | best_train 0.747 | 74s
+  epoch  2300 | val 0.747 | best_train 0.747 | 75s
+  epoch  2350 | val 0.745 | best_train 0.747 | 77s
+  epoch  2400 | val 0.741 | best_train 0.747 | 78s
+  epoch  2450 | val 0.745 | best_train 0.747 | 79s
+  epoch  2500 | val 0.741 | best_train 0.747 | 81s
+  epoch  2550 | val 0.758 | best_train 0.747 | 83s
+  epoch  2600 | val 0.748 | best_train 0.747 | 84s
+  epoch  2650 | val 0.742 | best_train 0.747 | 86s
+  epoch  2700 | val 0.752 | best_train 0.747 | 87s
+  epoch  2750 | val 0.754 | best_train 0.747 | 88s
+  epoch  2800 | val 0.744 | best_train 0.747 | 90s
+  epoch  2850 | val 0.748 | best_train 0.747 | 91s
+  epoch  2900 | val 0.752 | best_train 0.747 | 93s
+  epoch  2950 | val 0.753 | best_train 0.747 | 94s
+  epoch  3000 | val 0.757 | best_train 0.747 | 96s
+  epoch  3050 | val 0.759 | best_train 0.747 | 97s
+  epoch  3100 | val 0.752 | best_train 0.747 | 99s
+  epoch  3150 | val 0.748 | best_train 0.747 | 100s
+  epoch  3200 | val 0.754 | best_train 0.747 | 102s
+  epoch  3250 | val 0.755 | best_train 0.747 | 103s
+  epoch  3300 | val 0.767 | best_train 0.747 | 105s
+  epoch  3350 | val 0.756 | best_train 0.747 | 106s
+  epoch  3400 | val 0.756 | best_train 0.747 | 108s
+  epoch  3450 | val 0.746 | best_train 0.747 | 109s
+  epoch  3500 | val 0.755 | best_train 0.747 | 111s
+  epoch  3550 | val 0.753 | best_train 0.747 | 112s
+  epoch  3600 | val 0.750 | best_train 0.747 | 114s
+  epoch  3650 | val 0.757 | best_train 0.747 | 115s
+  epoch  3700 | val 0.756 | best_train 0.749 | 117s
+  epoch  3750 | val 0.764 | best_train 0.749 | 118s
+  epoch  3800 | val 0.753 | best_train 0.749 | 120s
+  epoch  3850 | val 0.755 | best_train 0.749 | 121s
+  epoch  3900 | val 0.750 | best_train 0.749 | 123s
+  epoch  3950 | val 0.749 | best_train 0.749 | 124s
+  epoch  4000 | val 0.752 | best_train 0.749 | 126s
+  [0.300 x 18000] epochs=4000 val_acc=0.752 best_train=0.749 (126s)
+
+===== [batch sweep] ratio=0.400 batch=24000 (0.400x train) max_epochs=4000 =====
+LORA UPDATE (24000, 128, 8) (24000, 784, 8)
+LORA UPDATE (24000, 128, 8) (24000, 128, 8)
+LORA UPDATE (24000, 10, 8) (24000, 128, 8)
+  calib: 0.631s/epoch -> est 15138.7 ms/sample/update
+  epoch    50 | val 0.756 | best_train 0.742 | 8s
+  epoch   100 | val 0.746 | best_train 0.742 | 10s
+  epoch   150 | val 0.757 | best_train 0.745 | 12s
+  epoch   200 | val 0.751 | best_train 0.745 | 14s
+  epoch   250 | val 0.753 | best_train 0.745 | 16s
+  epoch   300 | val 0.764 | best_train 0.747 | 18s
+  epoch   350 | val 0.762 | best_train 0.747 | 21s
+  epoch   400 | val 0.756 | best_train 0.747 | 23s
+  epoch   450 | val 0.755 | best_train 0.748 | 25s
+  epoch   500 | val 0.753 | best_train 0.748 | 27s
+  epoch   550 | val 0.756 | best_train 0.748 | 29s
+  epoch   600 | val 0.756 | best_train 0.748 | 31s
+  epoch   650 | val 0.762 | best_train 0.748 | 33s
+  epoch   700 | val 0.757 | best_train 0.748 | 35s
+  epoch   750 | val 0.754 | best_train 0.748 | 37s
+  epoch   800 | val 0.754 | best_train 0.752 | 40s
+  epoch   850 | val 0.746 | best_train 0.752 | 42s
+  epoch   900 | val 0.747 | best_train 0.752 | 44s
+  epoch   950 | val 0.753 | best_train 0.752 | 46s
+  epoch  1000 | val 0.757 | best_train 0.752 | 48s
+  epoch  1050 | val 0.745 | best_train 0.752 | 50s
+  epoch  1100 | val 0.751 | best_train 0.752 | 52s
+  epoch  1150 | val 0.743 | best_train 0.752 | 54s
+  epoch  1200 | val 0.757 | best_train 0.752 | 56s
+  epoch  1250 | val 0.756 | best_train 0.752 | 58s
+  epoch  1300 | val 0.758 | best_train 0.752 | 61s
+  epoch  1350 | val 0.758 | best_train 0.752 | 63s
+  epoch  1400 | val 0.750 | best_train 0.752 | 65s
+  epoch  1450 | val 0.744 | best_train 0.752 | 67s
+  epoch  1500 | val 0.751 | best_train 0.752 | 69s
+  epoch  1550 | val 0.756 | best_train 0.752 | 71s
+  epoch  1600 | val 0.754 | best_train 0.752 | 73s
+  epoch  1650 | val 0.750 | best_train 0.752 | 75s
+  epoch  1700 | val 0.746 | best_train 0.752 | 77s
+  epoch  1750 | val 0.750 | best_train 0.752 | 79s
+  epoch  1800 | val 0.740 | best_train 0.752 | 81s
+  epoch  1850 | val 0.752 | best_train 0.752 | 83s
+  epoch  1900 | val 0.749 | best_train 0.752 | 85s
+  epoch  1950 | val 0.753 | best_train 0.752 | 87s
+  epoch  2000 | val 0.748 | best_train 0.752 | 89s
+  epoch  2050 | val 0.734 | best_train 0.752 | 92s
+  epoch  2100 | val 0.747 | best_train 0.752 | 94s
+  epoch  2150 | val 0.748 | best_train 0.752 | 96s
+  epoch  2200 | val 0.743 | best_train 0.752 | 98s
+  epoch  2250 | val 0.742 | best_train 0.752 | 100s
+  epoch  2300 | val 0.758 | best_train 0.752 | 102s
+  epoch  2350 | val 0.743 | best_train 0.752 | 105s
+  epoch  2400 | val 0.746 | best_train 0.752 | 107s
+  epoch  2450 | val 0.749 | best_train 0.752 | 109s
+  epoch  2500 | val 0.739 | best_train 0.752 | 111s
+  epoch  2550 | val 0.735 | best_train 0.752 | 113s
+  epoch  2600 | val 0.738 | best_train 0.752 | 115s
+  epoch  2650 | val 0.751 | best_train 0.752 | 118s
+  epoch  2700 | val 0.740 | best_train 0.752 | 120s
+  epoch  2750 | val 0.757 | best_train 0.752 | 122s
+  epoch  2800 | val 0.742 | best_train 0.752 | 124s
+  epoch  2850 | val 0.752 | best_train 0.752 | 126s
+  epoch  2900 | val 0.745 | best_train 0.752 | 128s
+  epoch  2950 | val 0.740 | best_train 0.752 | 131s
+  epoch  3000 | val 0.748 | best_train 0.752 | 133s
+  epoch  3050 | val 0.745 | best_train 0.754 | 135s
+  epoch  3100 | val 0.743 | best_train 0.754 | 137s
+  epoch  3150 | val 0.745 | best_train 0.754 | 139s
+  epoch  3200 | val 0.754 | best_train 0.754 | 141s
+  epoch  3250 | val 0.759 | best_train 0.754 | 144s
+  epoch  3300 | val 0.753 | best_train 0.754 | 146s
+  epoch  3350 | val 0.753 | best_train 0.754 | 148s
+  epoch  3400 | val 0.749 | best_train 0.754 | 150s
+  epoch  3450 | val 0.751 | best_train 0.754 | 152s
+  epoch  3500 | val 0.751 | best_train 0.754 | 154s
+  epoch  3550 | val 0.753 | best_train 0.754 | 156s
+  epoch  3600 | val 0.739 | best_train 0.754 | 158s
+  epoch  3650 | val 0.754 | best_train 0.754 | 161s
+  epoch  3700 | val 0.753 | best_train 0.754 | 163s
+  epoch  3750 | val 0.747 | best_train 0.754 | 165s
+  epoch  3800 | val 0.748 | best_train 0.754 | 167s
+  epoch  3850 | val 0.739 | best_train 0.754 | 169s
+  epoch  3900 | val 0.744 | best_train 0.754 | 171s
+  epoch  3950 | val 0.745 | best_train 0.754 | 173s
+  epoch  4000 | val 0.756 | best_train 0.754 | 176s
+  [0.400 x 24000] epochs=4000 val_acc=0.756 best_train=0.754 (176s)
+
+===== [batch sweep] ratio=0.500 batch=30000 (0.500x train) max_epochs=4000 =====
+E0812 21:36:19.289325     502 cuda_executor.cc:1176] [0] Failed to allocate device memory of 4.00GiB (4294967296 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+LORA UPDATE (30000, 128, 8) (30000, 784, 8)
+LORA UPDATE (30000, 128, 8) (30000, 128, 8)
+LORA UPDATE (30000, 10, 8) (30000, 128, 8)
+  calib: 0.684s/epoch -> est 20527.6 ms/sample/update
+  epoch    50 | val 0.763 | best_train 0.749 | 9s
+  epoch   100 | val 0.759 | best_train 0.750 | 11s
+  epoch   150 | val 0.761 | best_train 0.750 | 14s
+  epoch   200 | val 0.763 | best_train 0.750 | 16s
+  epoch   250 | val 0.751 | best_train 0.750 | 18s
+  epoch   300 | val 0.759 | best_train 0.750 | 20s
+  epoch   350 | val 0.752 | best_train 0.750 | 23s
+  epoch   400 | val 0.762 | best_train 0.752 | 25s
+  epoch   450 | val 0.759 | best_train 0.752 | 27s
+  epoch   500 | val 0.767 | best_train 0.752 | 30s
+  epoch   550 | val 0.758 | best_train 0.752 | 32s
+  epoch   600 | val 0.769 | best_train 0.752 | 34s
+  epoch   650 | val 0.760 | best_train 0.752 | 37s
+  epoch   700 | val 0.754 | best_train 0.752 | 39s
+  epoch   750 | val 0.758 | best_train 0.752 | 41s
+  epoch   800 | val 0.751 | best_train 0.752 | 44s
+  epoch   850 | val 0.751 | best_train 0.752 | 46s
+  epoch   900 | val 0.765 | best_train 0.752 | 48s
+  epoch   950 | val 0.767 | best_train 0.752 | 51s
+  epoch  1000 | val 0.765 | best_train 0.752 | 53s
+  epoch  1050 | val 0.776 | best_train 0.753 | 55s
+  epoch  1100 | val 0.761 | best_train 0.753 | 57s
+  epoch  1150 | val 0.773 | best_train 0.754 | 60s
+  epoch  1200 | val 0.763 | best_train 0.754 | 62s
+  epoch  1250 | val 0.770 | best_train 0.754 | 64s
+  epoch  1300 | val 0.769 | best_train 0.754 | 66s
+  epoch  1350 | val 0.760 | best_train 0.754 | 69s
+  epoch  1400 | val 0.764 | best_train 0.754 | 71s
+  epoch  1450 | val 0.767 | best_train 0.754 | 73s
+  epoch  1500 | val 0.762 | best_train 0.754 | 75s
+  epoch  1550 | val 0.764 | best_train 0.754 | 78s
+  epoch  1600 | val 0.756 | best_train 0.754 | 80s
+  epoch  1650 | val 0.757 | best_train 0.754 | 82s
+  epoch  1700 | val 0.756 | best_train 0.754 | 84s
+  epoch  1750 | val 0.759 | best_train 0.754 | 87s
+  epoch  1800 | val 0.762 | best_train 0.754 | 89s
+  epoch  1850 | val 0.753 | best_train 0.754 | 91s
+  epoch  1900 | val 0.756 | best_train 0.754 | 93s
+  epoch  1950 | val 0.759 | best_train 0.754 | 96s
+  epoch  2000 | val 0.758 | best_train 0.754 | 98s
+  epoch  2050 | val 0.755 | best_train 0.754 | 100s
+  epoch  2100 | val 0.757 | best_train 0.754 | 103s

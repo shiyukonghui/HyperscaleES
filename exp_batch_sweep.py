@@ -1,22 +1,19 @@
-"""按"批次大小 / 总参数量"比例取多个线性点做批次扫描实验（整夜、预算上限驱动版）。
+"""按"批次大小 / 总参数量"比例取多个线性点做批次扫描实验（固定 epoch 版）。
 
 设计：
   变量 = 批次大小 num_envs（每次进化更新使用的并行候选/样本数）。
-  - 取"线性点"：ratio_i ∈ RATIOS（默认 0.1~0.5 均匀 5 点），
-    batch_i = round(ratio_i × total_params)，其中 total_params 由模型实时计算。
-  - 每个点用相同固定 LR（默认 0.03）、硬 0/1 奖励，跑尽可能多的更新（epoch）；
-    epoch 数由"每点时间片 = 总预算 / 点数"自适应决定：先标定 s/epoch，再填满时间片，
-    对 CPU 速度波动 / 大批次非线性耗时鲁棒。
-  - 全局硬截止时间（默认 15 小时，可传 budget_hours）到时自动停止并输出汇总，
-    保证整夜不超时、明早 9 点前结束。
-  - 每个点结束后把结果追加写盘（results_batch_sweep.csv）、进度写 progress 文件，
-    后台崩溃也能保留已完成点的数据。
+  - 取"线性点"：ratio_i ∈ RATIOS（默认 0.1~0.5 每 0.1 一点，共 5 点），
+    batch_i = round(ratio_i × n_train)，其中 n_train 为训练集大小
+    （相对训练集比例，0.1~0.5 对应 6000~30000，全部不同、无截断）。
+  - 每个点用相同固定 LR（默认 0.03）、硬 0/1 奖励，固定跑 MAX_EPOCHS（默认 4000）
+    次进化更新（含 10 次标定更新），与时间/预算解耦，便于横向比较。
+  - 每个点结束后把结果追加写盘（results_batch_sweep.csv），后台崩溃也不丢已完成点。
 
 用法：
-    .\\.venv\\Scripts\\python.exe exp_batch_sweep.py [budget_hours] [r0 r1 ...]
+    python exp_batch_sweep.py [r0 r1 ...]
 示例：
-    .\\.venv\\Scripts\\python.exe exp_batch_sweep.py 15
-    .\\.venv\\Scripts\\python.exe exp_batch_sweep.py 15 0.1 0.2 0.3 0.4 0.5
+    python exp_batch_sweep.py
+    python exp_batch_sweep.py 0.1 0.2 0.3 0.4 0.5
 """
 
 import csv
@@ -40,7 +37,10 @@ DTYPE = jnp.float32
 IN_DIM = 28 * 28
 HIDDEN = [128, 128]
 NUM_CLASSES = 10
-MNIST_DIR = r"D:\Rust\snn_t1\mnist_data"
+MNIST_DIR = os.environ.get("MNIST_DIR") or r"D:\Rust\snn_t1\mnist_data"
+# WSL 下 Windows 盘符路径不生效，自动回退到 /mnt/d 挂载路径（原生 Windows 行为不变）
+if not os.path.isdir(MNIST_DIR) and os.path.isdir("/mnt/d/Rust/snn_t1/mnist_data"):
+    MNIST_DIR = "/mnt/d/Rust/snn_t1/mnist_data"
 
 T = 8
 sigma = 0.2
@@ -49,11 +49,10 @@ seed = 0
 VAL = 1024
 EVAL_EVERY = 50    # 周期性测试集评估间隔（epoch）
 
-# 命令行参数
-budget_hours = float(sys.argv[1]) if len(sys.argv) > 1 else 15.0
-RATIOS = [float(r) for r in sys.argv[2:]] or [0.1, 0.2, 0.3, 0.4, 0.5]
+# 命令行参数（只接受批次比例，每个点固定跑 MAX_EPOCHS 次更新）
+MAX_EPOCHS = 4000   # 每个批次点固定运行的进化更新次数（含 10 次标定更新）
+RATIOS = [float(r) for r in sys.argv[1:]] or [round(0.1 * i, 2) for i in range(1, 6)]  # 默认 0.1~0.5 每 0.1 一点
 
-BUDGET_S = budget_hours * 3600.0
 CSV_PATH = "results_batch_sweep.csv"
 
 # ---- data -----------------------------------------------------------------
@@ -70,12 +69,12 @@ frozen_params, params, scan_map, es_map = SNNModel.rand_init(
 )
 total_params = sum(p.size for p in jax.tree.leaves(params))
 
-# 批次线性点（截断到训练集大小）
+# 批次线性点（相对训练集大小：0.1~1.0 对应 6000~60000，全部不同、无截断）
 batch_points = []
 for r in RATIOS:
-    b = int(round(r * total_params))
+    b = int(round(r * n_train))
     b = max(1, min(b, n_train))
-    batch_points.append((r, b, r * total_params))
+    batch_points.append((r, b, r * n_train))
 
 es_tree_key = simple_es_tree_key(params, es_key, scan_map)
 frozen_noiser, noiser_params = NOISER.init_noiser(
@@ -123,10 +122,10 @@ def make_step(data_key, num_envs):
     return step
 
 
-def run_point(ratio, num_envs, point_slice_s, deadline):
-    """在一个批次点上，自适应地跑满 point_slice_s（但不越过全局 deadline）。"""
+def run_point(ratio, num_envs, max_epochs):
+    """在一个批次点上固定跑 max_epochs 次进化更新（含 10 次标定更新）。"""
     print(f"\n===== [batch sweep] ratio={ratio:.3f} batch={num_envs} "
-          f"(target {num_envs / total_params:.3f}x) slice={point_slice_s:.0f}s =====",
+          f"({num_envs / n_train:.3f}x train) max_epochs={max_epochs} =====",
           flush=True)
     t0 = time.time()
     step = make_step(data_key, num_envs)
@@ -142,17 +141,9 @@ def run_point(ratio, num_envs, point_slice_s, deadline):
     print(f"  calib: {cal_s:.3f}s/epoch -> est {cal_s * num_envs:.1f} ms/sample/update",
           flush=True)
 
-    est_each = int(max(10, (point_slice_s - (time.time() - t0)) / cal_s)) if cal_s > 0 else 100
-    print(f"  plan: ~{est_each} more epochs to fill slice", flush=True)
-
     epoch = cal
     last_val = 0.0
-    while True:
-        if time.time() >= deadline:
-            print("  global deadline reached, stopping point.", flush=True)
-            break
-        if time.time() - t0 >= point_slice_s:
-            break
+    while epoch < max_epochs:
         _, acc = step(epoch)
         best = max(best, acc)
         epoch += 1
@@ -167,13 +158,8 @@ def run_point(ratio, num_envs, point_slice_s, deadline):
 
 
 def main():
-    deadline = time.time() + BUDGET_S
-    n_points = len(batch_points)
-    point_slice_s = BUDGET_S / n_points
-
     print(f"total_params = {total_params}", flush=True)
-    print(f"budget = {budget_hours}h ({BUDGET_S:.0f}s), points = {n_points}, "
-          f"per-point slice = {point_slice_s:.0f}s", flush=True)
+    print(f"points = {len(batch_points)}, max_epochs/point = {MAX_EPOCHS}", flush=True)
     print(f"batch points (ratio -> batch): "
           f"{[(r, b) for r, b, _ in batch_points]}", flush=True)
 
@@ -188,11 +174,8 @@ def main():
 
     results = []
     for ratio, num_envs, raw_target in batch_points:
-        if time.time() >= deadline:
-            print("global deadline reached before next point.", flush=True)
-            break
         epochs, last_val, best, elapsed, cal_s = run_point(
-            ratio, num_envs, point_slice_s, deadline)
+            ratio, num_envs, MAX_EPOCHS)
         results.append((ratio, num_envs, epochs, last_val, best, elapsed))
         with open(CSV_PATH, "a", newline="") as f:
             csv.writer(f).writerow([ratio, num_envs, epochs, last_val, best,
@@ -201,7 +184,7 @@ def main():
               f"val_acc={last_val:.3f} best_train={best:.3f} ({elapsed:.0f}s)",
               flush=True)
 
-    print("\n===== 批次扫描汇总（按批次/总参数量比例取线性点，固定 LR） =====")
+    print("\n===== 批次扫描汇总（按批次/总参数量比例取线性点，固定 LR，每点固定 epoch） =====")
     print(f"{'ratio':>6} | {'batch':>6} | {'epochs':>6} | {'val_acc':>8} | {'best_train':>10} | {'用时(s)':>8}")
     for ratio, num_envs, epochs, last_val, best, elapsed in results:
         print(f"{ratio:6.3f} | {num_envs:6d} | {epochs:6d} | {last_val:8.3f} | "

@@ -1,10 +1,15 @@
 from tokenizers import Tokenizer
-from pyrwkv_tokenizer import RWKVTokenizer
 from transformers import AutoTokenizer
 
 import numpy as np
 import os 
 dir_path = os.path.dirname(os.path.realpath(__file__))
+# pyrwkv_tokenizer 是 Rust 扩展包，部分 Python 版本（如 3.14）无预编译 wheel。
+# SNN/MNIST 实验不依赖 RWKV 分词器，故改为惰性导入，仅在使用 WorldTokenizer 时才需要。
+try:
+    from pyrwkv_tokenizer import RWKVTokenizer
+except ImportError:
+    RWKVTokenizer = None
 """
 RWKV tokenizer, mostly borrowed from https://github.com/BlinkDL/ChatRWKV/blob/main/RWKV_v6_demo.py
 """
@@ -113,6 +118,11 @@ class GptTokenizer(BaseTokenizer):
 class WorldTokenizer(BaseTokenizer):
 
     def __init__(self):
+        if RWKVTokenizer is None:
+            raise ImportError(
+                "pyrwkv_tokenizer 不可用：当前 Python 版本缺少预编译 wheel，"
+                "请安装 pyrwkv-tokenizer 或使用支持其 wheel 的 Python 版本"
+            )
         self.tok = RWKVTokenizer()
 
     def encode(self, src):

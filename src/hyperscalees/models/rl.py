@@ -5,8 +5,15 @@ import numpy as np
 from .base_model import Model, CommonInit, CommonParams
 
 from gymnax.environments import spaces
-import distrax
 from .common import Parameter, Embedding, MM, Linear, MLP, merge_inits, call_submodule, ACTIVATIONS
+
+# distrax 会连带导入 tensorflow_probability，后者在部分新版本 jax（如 0.11）上不兼容
+# （运行时抛 AttributeError 而非 ImportError）。
+# distrax 仅在本文件的 RL 前向中使用，SNN/MNIST 实验不涉及，故改为惰性导入。
+try:
+    import distrax
+except Exception:
+    distrax = None
 
 def get_space_defn(space):
     if isinstance(space, spaces.Discrete):
@@ -76,6 +83,10 @@ class OutputProcessor(Model):
 
     @classmethod
     def _forward(cls, common_params, x, *args, **kwargs):
+        if distrax is None:
+            raise ImportError(
+                "distrax 不可用：请安装 distrax（并确保其依赖 tensorflow_probability 兼容当前 jax 版本）"
+            )
         # name = list(common_params.params.keys())[0]
         if 'discrete' in common_params.params:
             x = call_submodule(Linear, 'discrete', common_params, x)
