@@ -4,7 +4,7 @@
 比较终端 val_acc，研究"批次放大 + 学习率调度"的叠加效应。
 
 用法：
-    .\\.venv\\Scripts\\python.exe exp_lr_schedule.py [epochs] [num_envs]
+    .\\.venv\\Scripts\\python.exe exp_lr_schedule.py [epochs] [num_envs] [base_lr]
 """
 
 import sys
@@ -30,9 +30,9 @@ MNIST_DIR = r"D:\Rust\snn_t1\mnist_data"
 
 num_epochs = int(sys.argv[1]) if len(sys.argv) > 1 else 200
 num_envs = int(sys.argv[2]) if len(sys.argv) > 2 else 2048
+base_lr = float(sys.argv[3]) if len(sys.argv) > 3 else 0.03
 T = 8
 sigma = 0.2
-base_lr = 0.03
 seed = 0
 
 
