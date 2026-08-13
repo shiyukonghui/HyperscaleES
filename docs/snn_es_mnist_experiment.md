@@ -550,6 +550,48 @@ v_th 是全部 LIF 层共享同一个可训练标量，而第 2/3 层输入是�
 wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS='--xla_gpu_autotune_level=1' /root/hyperscalees-venv/bin/python exp_vth_trainable.py"
 ```
 
+### 7.15 3 层网络长时训练：fixed vs cosine LR（GPU / WSL2，2026-08）
+
+**背景**：7.14 中 3 层逐层 v_th 在 1000 epochs 内仅 0.431 且仍处上升趋势，推断是训练时长不足。
+本次把 epoch 数拉到 10000，并对比固定 LR 与余弦退火 LR（`exp_vth_trainable.py` 新增
+`LR_SCHEDULE` 命令行参数，cosine 与 exp_lr_schedule.py 同口径：`cosine_decay_schedule(0.03, 10000)`）。
+
+**配置**：T=8, hidden=[128,128,128], sigma=0.2, seed=0, batch=12000, rank=32, 逐层 v_th,
+tau 冻结, 10000 epochs。
+
+| LR 调度 | val_acc | best_train | v_th 终值 | 用时(s) |
+|---|---|---|---|---|
+| fixed | 0.655 | 0.660 | [0.855 / 0.469 / 14.446] | 333 |
+| **cosine** | **0.699** | 0.694 | [0.575 / 0.230 / 9.877] | 332 |
+
+**与历史对比**（3 层逐层 v_th）：
+
+| 配置 | val_acc |
+|---|---|
+| 1000 epochs（7.14） | 0.431 |
+| 10000 epochs fixed | 0.655 |
+| 10000 epochs cosine | 0.699 |
+| 2 层基准（7.12，1000 epochs） | 0.757 |
+
+**结论：延长训练显著帮助 3 层收敛，且 cosine 优于 fixed（+4.4pp）。**
+
+1. **训练时长是关键**：0.431 → 0.655/0.699，验证 7.14 中"3 层收敛更慢、未到平台"的判断；
+   3 层网络确实需要远超 2 层的更新次数。
+2. **cosine 后期低 LR 稳定参数**：cosine 的 v_th 在 epoch 9200~10000 几乎完全冻结于
+   [0.575/0.230/9.88]；而 fixed 的 v_th 全程漂移（第 3 层阈值一路冲到 14.4 仍在动），
+   尾部过冲损失精度——这与 7.8"大批次下 fixed 最优"的结论不同，原因是本实验含大量可训练
+   超参（逐层 v_th）且训练更长，退火有助于稳定。
+3. **3 层仍未超过 2 层（0.699 vs 0.757）**：即使 10000 epochs + 逐层 v_th + cosine，第 3 层
+   阈值仍被推到 ~10（近全关状态），深层实际承载的信息有限——深层表示优势未兑现，需层间
+   归一化/残差等结构改进（呼应 7.14 工程建议）。
+
+**复现**（WSL2 / GPU；`LR_SCHEDULE` 取 fixed 或 cosine）：
+
+```bash
+wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS='--xla_gpu_autotune_level=1' /root/hyperscalees-venv/bin/python exp_vth_trainable.py fixed"
+wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS='--xla_gpu_autotune_level=1' /root/hyperscalees-venv/bin/python exp_vth_trainable.py cosine"
+```
+
 ## 8. 复现 / 使用方法
 
 ```bash

@@ -17,6 +17,7 @@
 
 import csv
 import os
+import sys
 import time
 
 import jax
@@ -45,9 +46,9 @@ if not os.path.isdir(MNIST_DIR) and os.path.isdir("/mnt/d/Rust/snn_t1/mnist_data
 
 # ---- 固定配置（单点测试） ---------------------------------------------------
 BATCH_RATIO = 0.2    # 批次比例（0.2 × 60000 = 12000）
-LR = 0.03            # 固定 LR
+LR = 0.03            # 固定 LR（cosine 调度时作为初始 LR）
 RANK = 32            # LoRA rank（上一实验的性价比平衡点）
-MAX_EPOCHS = 1000    # 固定更新次数（含 10 次标定）
+MAX_EPOCHS = 10000   # 固定更新次数（含 10 次标定）
 TRAIN_TAU = False    # tau 冻结（7.13 负面结论）；仅 v_th 可训练
 VTH_PER_LAYER = True # 逐层独立 v_th：每层一个可训练阈值（解决深层网络脉冲链衰减）
 T = 8
@@ -56,9 +57,13 @@ seed = 0
 VAL = 1024
 EVAL_EVERY = 50
 
-# 结果按网络结构与 v_th 模式分文件，避免混淆
+# LR 调度（命令行第 1 参数）：fixed = 固定 LR；cosine = 余弦退火（与 exp_lr_schedule.py 同口径）
+LR_SCHEDULE = sys.argv[1] if len(sys.argv) > 1 else "fixed"
+assert LR_SCHEDULE in ("fixed", "cosine"), "LR_SCHEDULE 只能为 fixed 或 cosine"
+
+# 结果按网络结构 / v_th 模式 / LR 调度分文件，避免混淆
 CSV_PATH = (f"results_vth_trainable_h{'_'.join(map(str, HIDDEN))}"
-            f"{'_perlayer' if VTH_PER_LAYER else ''}.csv")
+            f"{'_perlayer' if VTH_PER_LAYER else ''}_{LR_SCHEDULE}.csv")
 
 
 class TrainableVthSNN(Model):
@@ -153,10 +158,15 @@ frozen_params, params, scan_map, es_map = TrainableVthSNN.rand_init(
 total_params = sum(p.size for p in jax.tree.leaves(params))
 print(f"total_params = {total_params} (含可训练 v_th)", flush=True)
 
-# ---- noiser + JIT（固定 rank） ----------------------------------------------
+# ---- noiser + JIT（固定 rank，LR 可选调度） ----------------------------------
 es_tree_key = simple_es_tree_key(params, es_key, scan_map)
+# LR 调度：fixed = 固定 LR；cosine = 余弦退火（decay_steps = MAX_EPOCHS）
+if LR_SCHEDULE == "cosine":
+    lr_sched = optax.cosine_decay_schedule(LR, decay_steps=MAX_EPOCHS)
+else:
+    lr_sched = LR
 frozen_noiser, noiser_params = NOISER.init_noiser(
-    params, sigma, LR, solver=optax.adamw,
+    params, sigma, lr_sched, solver=optax.adamw,
     solver_kwargs={"b1": 0.9, "b2": 0.999}, rank=RANK,
 )
 jit_forward = jax.jit(jax.vmap(
@@ -221,8 +231,9 @@ def make_step(data_key):
 
 
 def main():
-    print(f"hidden = {HIDDEN}, batch = {num_envs} ({BATCH_RATIO}x train), lr = {LR}, "
-          f"sigma = {sigma}, rank = {RANK}, max_epochs = {MAX_EPOCHS}", flush=True)
+    print(f"hidden = {HIDDEN}, batch = {num_envs} ({BATCH_RATIO}x train), lr = {LR} "
+          f"({LR_SCHEDULE}), sigma = {sigma}, rank = {RANK}, max_epochs = {MAX_EPOCHS}",
+          flush=True)
     print(f"初始 v_th = [{fmt_vth(current_vth())}], 初始 tau_m = {current_tau():.3f} "
           f"(VTH_PER_LAYER={VTH_PER_LAYER}, TRAIN_TAU={TRAIN_TAU})", flush=True)
 

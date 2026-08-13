@@ -1,0 +1,2 @@
+hidden,batch,lr,rank,epochs,val_acc,best_train,vth_final,tau_final,s_per_epoch,time_s
+128-128-128,12000,0.03,32,10000,0.6552734375,0.6597499847412109,0.85480/0.46869/14.44605,20.0,0.90831,333

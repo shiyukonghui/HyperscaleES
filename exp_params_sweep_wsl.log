@@ -1,0 +1,16 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+固定: batch=12000, lr=0.03, rank=32, epochs=3000, 2 层 [128,128], v_th 可训练, 硬 0/1
+基准值: {'T': 8, 'sigma': 0.2, 'noise_reuse': 0, 'group_size': 0}
+
+===== 扫描 T : [8, 16, 32, 64] =====
+[T=8] ...
+LORA UPDATE (12000, 128, 32) (12000, 784, 32)
+LORA UPDATE (12000, 128, 32) (12000, 128, 32)
+LORA UPDATE (12000, 10, 32) (12000, 128, 32)
+  [T=8] val_acc=0.827 best_train=0.812
+[T=16] ...
+LORA UPDATE (12000, 128, 32) (12000, 784, 32)
+LORA UPDATE (12000, 128, 32) (12000, 128, 32)
+LORA UPDATE (12000, 10, 32) (12000, 128, 32)
+  [T=16] val_acc=0.772 best_train=0.756
+[T=32] ...
