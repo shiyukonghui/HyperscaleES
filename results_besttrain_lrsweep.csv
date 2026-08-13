@@ -1,0 +1,6 @@
+name,kind,lr_start,lr_end,max_epochs,val_acc,best_train
+fixed_003,fixed,0.003,,8000,0.86035,0.80917
+fixed_005,fixed,0.005,,8000,0.8584,0.82417
+fixed_01,fixed,0.01,,8000,0.82031,0.81967
+fixed_02,fixed,0.02,,8000,0.70605,0.78583
+linear_01,linear,0.01,0.001,8000,0.84863,0.8335

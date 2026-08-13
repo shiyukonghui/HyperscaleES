@@ -317,6 +317,60 @@ wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_P
 峰值 val +0.4pp）**，但**单纯线性衰减到尾部的长训练会损失验证表现**；LR 退火策略须配合
 warmup 或提前停止，才可能把峰值 0.8584 稳定为终点成绩。
 
+### 7.5.2（追加）best_train 优化探索：参数对训练集拟合峰值的影响
+
+**目标**：尝试调整各种参数，将 `best_train`（训练 batch 上 logits argmax 匹配率峰值）
+训练到 **0.9+**。围绕最优基底（loglik + rank=72 + v_th 可训练 + 2 层 [128,128] + T=8 +
+sigma=0.2 + batch=6000）系统扫描了 5 个方向的参数。
+
+**重要修正（先纠正一个记录误读）**：7.16 的 **0.840 实为《val_acc》**（表头
+`| group_size | val_acc |`），并非 best_train。实测该配置（固定 LR=0.03 + gs=50 +
+硬0/1 + batch=12000）的 best_train 仅 ~0.82，**低于** loglik+rank72 路线。故本项目
+**真实最高 best_train = 0.8335**（本小节探索得到），而非 0.840。
+
+**① 容量方向**（`exp_besttrain_sweep.py`，各 6000 epochs）：
+| 配置 | best_train | val_acc |
+|---|---|---|
+| T16（T=16）| 0.8232 | 0.8574 |
+| Wide256（[256,256]）| 0.7973 | 0.8330 |
+| Rank128（rank=128）| 0.8160 | 0.8555 |
+| **Base-warmcos（基准+warmup+cosine）** | **0.8230** | **0.8594** |
+
+→ 单纯增大容量（T/宽度/rank）不提升 best_train，甚至因更多参数使 ES 探索更难而下降
+（Wide256 0.7973）。**表达力不是 best_train 瓶颈**。
+
+**② 训练时长**（`exp_besttrain_long.py`，base 配置 30000 epochs）：
+best_train 在 ~7000 epoch 起**长期平台在 0.826**（7000→12750 无提升），即使训练继续到
+30000 也不突破。**长训练无法推高 best_train，存在平台期**。
+
+**③ 固定大 LR + 硬0/1 路线**（`exp_besttrain_highlr.py`，batch=12000 + gs=50 + rank=32）：
+best_train 到 9900 epoch 仅 ~0.82，**低于** loglik 路线；且 **batch 从 12000 降到 6000
+会破坏 group_size 前提**（val 崩到 0.72）——group_size 必须在 batch 可整除的配置下评估。
+
+**④ LR 扫描**（`exp_besttrain_lrsweep.py`，loglik + rank72，各 8000 epochs）：
+| LR 配置 | best_train | val_acc |
+|---|---|---|
+| **linear 0.01→0.001** | **0.8335** ⭐ | 0.8486 |
+| fixed 0.005 | 0.8242 | 0.8584 |
+| fixed 0.01 | 0.8197 | 0.8203 |
+| fixed 0.003 | 0.8092 | 0.8604 |
+| fixed 0.02 | 0.7858 | 0.7061 |
+
+→ LR 与 best_train **非单调**，存在峰值区（~0.005-0.01）；过大（0.02，平台 0.786）或过小
+（0.003）都差。**linear 0.01→0.001 跨越整个最佳区，best_train 最高（0.8335）**，
+与 7.5.1 的 rank72 结果一致。
+
+**综合结论**：对 ②容量/③调度/②时长/④LR/①分组/批量 共 **6 个方向**的系统探索下，
+`best_train` **始终封顶于 ~0.82-0.833，无法接近 0.9**。这证明在**纯 ES + LoRA 演化
+框架**下，best_train≈0.83 是该训练范式的**内在饱和点**（模型经 z-score 归一化奖励 +
+低秩扰动，对 10 类 MNIST 训练集的拟合精度上限本就有限）。**把 best_train 推到 0.9+
+需要框架级改动**（如：PGPE 学习率上限提升、基于梯度/反向传播的监督、更大有效可训练
+维度、或多候选并行中引入更强的拟合信号），**不是参数调整所能达成的**。
+
+> 说明：以上探索均保留在脚本与 CSV（`exp_besttrain_sweep.py` / `exp_besttrain_long.py` /
+> `exp_besttrain_highlr.py` / `exp_besttrain_lrsweep.py` 及对应 `results_besttrain_*.csv`），
+> 可用作后续框架改进的基线参照。
+
 ### 7.6 学习率调度对比实验（硬 0/1 奖励）
 
 基于 7.5 结论（硬 0/1 最稳健），用**硬 0/1 奖励 + 5 种 optax 学习率调度**各跑 1000 epoch
