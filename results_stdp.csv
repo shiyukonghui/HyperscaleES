@@ -1,0 +1,2 @@
+batch,T,a_plus,a_minus,decay,lr_fc3,max_epochs,val_acc,best_train
+6000,8,0.005,0.003,0.9,0.01,10000,0.25781,0.42333
