@@ -1,15 +1,18 @@
-"""2 层 SNN 参数扫描：T（时间步）/ sigma（扰动幅度）/ noise_reuse / group_size 控制变量法。
+"""log-likelihood 奖励 + 高 rank(72) + 线性递减学习率 + 长训练(10000 epochs) 实验。
 
-固定：batch=12000, LR=0.03, epochs=3000, rank=32, v_th 可训练, 2 层 [128,128], 硬 0/1 奖励。
-控制变量法：每个维度只改一个参数，其余取基准值（T=8, sigma=0.2, noise_reuse=0, group_size=0）。
+背景：
+  文档 7.5 重测（exp_reward_sweep.py）显示，在 大批次(0.2) + LoRA rank + v_th 可训练 +
+  固定小 LR=0.01 的配置下，log-likelihood(log_softmax) 反转为全场最优（val_acc=0.8545，
+  超越 0.84 记录）。本脚本进一步改进目标：
+    - rank 提升到 72（原 32）：增加可训练子空间容量，期望突破 0.8545。
+    - LR 使用线性递减（optax.linear_schedule 0.01 -> 0.001）：长训练后期用小学习率微调，
+      抑制 logits 尺度发散，稳定 log-likelihood 奖励。
+    - 训练时长拉长到 10000 epochs：观察长程收敛与最终平台。
 
-设计：
-  - 每个配置（参数名-值）独立跑一遍，与 exp_vth_trainable.py 相同的 2 层可训练 v_th 模型。
-  - 每维度扫描后输出小计，最后汇总对比，确定各参数收益边际。
-  - 结果追加写盘（results_params_sweep.csv）。
+奖励：仅 log-likelihood（log_softmax(logits)[label]）。
 
 用法：
-    python exp_params_sweep.py
+    python exp_rank72_lrdecay.py
 """
 
 import csv
@@ -26,7 +29,7 @@ from hyperscalees.models.common import (
 )
 from hyperscalees.models.snn import run_lif
 from hyperscalees.environments.snn_mnist import (
-    get_mnist_arrays, poisson_encode, fitness_from_logits, accuracy_from_logits,
+    get_mnist_arrays, poisson_encode, accuracy_from_logits,
 )
 
 NOISER = hs.noiser.eggroll.EggRoll
@@ -39,29 +42,35 @@ MNIST_DIR = os.environ.get("MNIST_DIR") or r"D:\Rust\snn_t1\mnist_data"
 if not os.path.isdir(MNIST_DIR) and os.path.isdir("/mnt/d/Rust/snn_t1/mnist_data"):
     MNIST_DIR = "/mnt/d/Rust/snn_t1/mnist_data"
 
-# ---- 固定配置 ----------------------------------------------------------------
-BATCH_RATIO = 0.2
-LR = 0.1           # warmup+cosine 的 peak 学习率
-RANK = 32
-MAX_EPOCHS = 3000
+# ---- 改进配置 ----------------------------------------------------------------
+# rank=72 相比 rank=32 的 LoRA 中间张量(...,rank)显著增大，0.2*60000=12000 的 batch 在
+# RTX 4090(24G) 上会 OOM，故 batch 从 0.2 降至 0.1(=6000) 以适配高 rank 的显存需求。
+BATCH_RATIO = 0.1
+LR_START = 0.01          # 线性递减起点（与 exp_reward_sweep 的固定 0.01 对齐）
+LR_END = 0.001           # 线性递减终点
+RANK = 72                # 原 32 -> 提升到 72
+MAX_EPOCHS = 10000       # 原 3000 -> 拉长到 10000
 TRAIN_TAU = False
-seed = 0
+seed = 42                # 换一个 seed 以免与旧实验重复/对照
 VAL = 1024
-EVAL_EVERY = 50
+EVAL_EVERY = 100
+# 其余超参沿用 7.5 重测基线
+T = 8
+SIGMA = 0.2
+NOISE_REUSE = 0
+GROUP_SIZE = 0
 
-# 固定非扫描维度（本实验：batch=0.2, LR 用 warmup+cosine(0.1), T=8, sigma=0.2）
-BASE = {"T": 8, "sigma": 0.2, "noise_reuse": 0, "group_size": 0}
-# 仅扫描 group_size 0~50。注意：convert_fitnesses 要求 batch(12000) 能被 group_size 整除，
-# 因此在 (0,50] 内只有 12000 的约数 5/10/15/20/24/30/40/48 是合法取值，加上 gs=0（无分组基线）。
-SWEEP = {
-    "group_size": [0, 5, 10, 15, 20, 30, 40, 48],
-}
-
-CSV_PATH = "results_params_sweep_gs0_50_warmcos.csv"
+CSV_PATH = "results_rank72_lrdecay_loglik.csv"
 
 
+def reward_loglik(logits, labels):
+    """正确类 log_softmax（连续、无界，( -inf, 0 ]）——7.5 重测全场最优奖励。"""
+    return jax.nn.log_softmax(logits, axis=-1)[jnp.arange(logits.shape[0]), labels]
+
+
+# ---- 模型（与 exp_reward_sweep.py 同款可训练 v_th 2 层 SNN） -------------------
 class TrainableVthSNN2L(Model):
-    """2 层 SNN，v_th 可训练（softplus 参数化）。与 exp_vth_trainable.py 同款但固定 2 层。"""
+    """2 层 SNN，v_th 可训练（softplus 参数化）。"""
 
     @classmethod
     def rand_init(cls, key, in_dim, hidden_dims, num_classes, tau_m=20.0,
@@ -107,9 +116,8 @@ x_te, y_te = get_mnist_arrays("test", data_dir=MNIST_DIR)
 n_train = x_tr.shape[0]
 num_envs = int(round(BATCH_RATIO * n_train))
 
-# ---- 模型 / noiser 初始化（T 只影响 forward，noiser 与参数有关，每个配置全建）
-def build(T, sigma, noise_reuse, group_size):
-    """按给定参数构建模型 + noiser + JIT，返回 run()（跑满 MAX_EPOCHS）。"""
+
+def run():
     key = jax.random.key(seed)
     model_key, es_key, dkey = jax.random.split(key, 3)
     frozen_p, p0, scan_map, es_map = TrainableVthSNN2L.rand_init(
@@ -117,15 +125,12 @@ def build(T, sigma, noise_reuse, group_size):
         num_classes=NUM_CLASSES, tau_m=20.0, v_th=0.3, dtype=DTYPE,
     )
     es_tree_key = simple_es_tree_key(p0, es_key, scan_map)
-    # warmup+cosine 调度：peak LR(0.1)，warmup 后余弦衰减（与 exp_lr_schedule.py 的 warmcos 同口径）
-    lr_sched = optax.warmup_cosine_decay_schedule(
-        init_value=0.0, peak_value=LR, warmup_steps=max(10, MAX_EPOCHS // 10),
-        decay_steps=MAX_EPOCHS, end_value=LR * 0.05,
-    )
+    # 线性递减学习率：0.01 -> 0.001，跨度 MAX_EPOCHS
+    lr_sched = optax.linear_schedule(LR_START, LR_END, transition_steps=MAX_EPOCHS)
     frozen_noiser, n0 = NOISER.init_noiser(
-        p0, sigma, lr_sched, solver=optax.adamw,
+        p0, SIGMA, lr_sched, solver=optax.adamw,
         solver_kwargs={"b1": 0.9, "b2": 0.999}, rank=RANK,
-        noise_reuse=noise_reuse, group_size=group_size,
+        noise_reuse=NOISE_REUSE, group_size=GROUP_SIZE,
     )
     jit_forward = jax.jit(jax.vmap(
         lambda n, p, i, x: TrainableVthSNN2L.forward(
@@ -138,7 +143,7 @@ def build(T, sigma, noise_reuse, group_size):
     jit_update = jax.jit(lambda n, p, f, i: NOISER.do_updates(
         frozen_noiser, n, p, es_tree_key, f, i, es_map))
 
-    # 用可变容器保存步间状态，避免依赖模块级 global（每个配置独立）
+    # 用可变容器保存步间状态，避免依赖模块级 global
     state = {"data_key": dkey, "noiser_params": n0, "params": p0}
 
     def eval_acc():
@@ -159,69 +164,57 @@ def build(T, sigma, noise_reuse, group_size):
         it = (jnp.full(num_envs, epoch, dtype=jnp.int32),
               jnp.arange(num_envs, dtype=jnp.int32))
         logits = jit_forward(state["noiser_params"], state["params"], it, spikes)
-        raw = fitness_from_logits(logits, labels)
+        raw = reward_loglik(logits, labels)
         fits = NOISER.convert_fitnesses(frozen_noiser, state["noiser_params"], raw)
         state["noiser_params"], state["params"] = jit_update(
             state["noiser_params"], state["params"], fits, it)
         return float(accuracy_from_logits(logits, labels))
 
-    def run():
-        # 标定 10 次（含 JIT）
-        best = 0.0
-        for e in range(10):
-            acc = step(e)
-            best = max(best, acc)
-        last_val = 0.0
-        epoch = 10
-        while epoch < MAX_EPOCHS:
-            acc = step(epoch)
-            best = max(best, acc)
-            epoch += 1
-            if epoch % EVAL_EVERY == 0:
-                last_val = eval_acc()
-        if last_val == 0.0:
-            last_val = eval_acc()
-        return last_val, best
+    def log_lr_at(epoch):
+        """打印当前步对应的线性衰减学习率（仅供日志参考）。"""
+        frac = min(1.0, epoch / MAX_EPOCHS)
+        return LR_START + (LR_END - LR_START) * frac
 
-    return run
+    # 标定 10 次（含 JIT）
+    best = 0.0
+    for e in range(10):
+        acc = step(e)
+        best = max(best, acc)
+    last_val = 0.0
+    epoch = 10
+    while epoch < MAX_EPOCHS:
+        acc = step(epoch)
+        best = max(best, acc)
+        epoch += 1
+        if epoch % EVAL_EVERY == 0:
+            last_val = eval_acc()
+            print(f"  epoch {epoch:5d} | lr {log_lr_at(epoch):.5f} | "
+                  f"val {last_val:.4f} | best_train {best:.4f}", flush=True)
+    if last_val == 0.0 or MAX_EPOCHS % EVAL_EVERY != 0:
+        last_val = eval_acc()
+    return last_val, best
 
 
 def main():
-    print(f"固定: batch={num_envs}, lr={LR}, rank={RANK}, epochs={MAX_EPOCHS}, "
-          f"2 层 [128,128], v_th 可训练, 硬 0/1", flush=True)
-    print(f"基准值: {BASE}", flush=True)
+    print(f"配置: batch={num_envs}, lr 线性 {LR_START}->{LR_END}, rank={RANK}, "
+          f"epochs={MAX_EPOCHS}, 2 层 [128,128], v_th 可训练, T={T}, sigma={SIGMA}, "
+          f"group_size={GROUP_SIZE}, reward=loglik", flush=True)
 
-    results = []
-    # 初始化 CSV
+    val, best = run()
+    print(f"\n===== 结果 =====")
+    print(f"  reward=loglik  rank={RANK}  lr 线性 {LR_START}->{LR_END}  "
+          f"{MAX_EPOCHS} epochs")
+    print(f"  val_acc={val:.4f}  best_train={best:.4f}")
+
     fresh = not os.path.exists(CSV_PATH)
     with open(CSV_PATH, "a", newline="") as f:
         w = csv.writer(f)
         if fresh:
-            w.writerow(["param", "value", "val_acc", "best_train"])
-        f.flush()
-
-    # 控制变量法：每个维度只动一个
-    for param, values in SWEEP.items():
-        print(f"\n===== 扫描 {param} : {values} =====", flush=True)
-        for v in values:
-            cfg = dict(BASE)
-            cfg[param] = v
-            print(f"[{param}={v}] ...", flush=True)
-            run = build(**cfg)
-            val, best = run()
-            results.append((param, v, val, best))
-            with open(CSV_PATH, "a", newline="") as f:
-                csv.writer(f).writerow([param, v, round(val, 5), round(best, 5)])
-                f.flush()
-            print(f"  [{param}={v}] val_acc={val:.3f} best_train={best:.3f}", flush=True)
-
-    print("\n===== 参数扫描汇总（控制变量法） =====")
-    for param in SWEEP:
-        print(f"--- {param} ---")
-        for p, v, val, best in results:
-            if p == param:
-                print(f"  {param}={v:>6}  val_acc={val:.4f}  best_train={best:.4f}")
-    print(f"\nresults appended to {CSV_PATH}")
+            w.writerow(["rank", "lr_start", "lr_end", "max_epochs", "seed",
+                        "val_acc", "best_train"])
+        w.writerow([RANK, LR_START, LR_END, MAX_EPOCHS, seed,
+                    round(val, 5), round(best, 5)])
+    print(f"results appended to {CSV_PATH}")
 
 
 if __name__ == "__main__":

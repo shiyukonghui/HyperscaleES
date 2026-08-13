@@ -234,6 +234,89 @@ epoch 49 train_acc 0.852   <- 收敛到 85%
 
 > 当前 `fitness_from_logits` 实现为 **sigmoid margin**（用户指定）；如需回到最高的硬 0/1，改动一行即可。
 
+**重测（2026-08，新配置下 loglik 反转）**：上述结论均基于**老配置**（num_envs=128 小并行、
+lr=0.03、无 LoRA rank / 无 v_th 可训练）。改用**新配置**（batch=12000、固定 lr=0.01、rank=32、
+v_th 可训练、2 层 [128,128]、T=8、sigma=0.2、3000 epochs）在同一套 2 层模型上系统重测了
+**6 种奖励**（含从文献检索到的温度缩放 softmax 概率、原始 margin、稀疏×置信度混合），
+结果**与 7.5 结论发生重大反转**（`exp_reward_sweep.py`）：
+
+| 奖励函数 | val_acc | best_train |
+|---|---|---|
+| **loglik（log_softmax）** | **0.8545** ⭐ | 0.8220 |
+| binary（硬 0/1） | 0.7900 | 0.7724 |
+| softmax_prob（温度缩放置信度） | 0.7871 | 0.7628 |
+| sigmoid_margin | 0.0977 | 0.1060 |
+| margin（原始边距） | 0.0977 | 0.1061 |
+| binary_conf（0/1×置信度） | 0.7119 | 0.6902 |
+
+**重测关键结论：**
+
+1. **log-likelihood 反转为全场最优（0.8545，+6.4pp over 硬 0/1）**，且**超越此前所有 2 层记录**
+   （原最高为固定 LR=0.03 + group_size=50 的 0.840）。7.5 中"loglik 崩溃"的结论**强烈依赖配置**：
+   在**大批次（12000）+ LoRA rank + v_th 可训练 + 固定小 LR=0.01** 下，无界 log-likelihood 反而
+   工作良好。小并行、大 LR 才会触发 logits 尺度发散。
+2. **margin 类（sigmoid_margin、原始 margin）完全失效（≈0.098）**：对 logits 绝对尺度过强依赖，
+   在新配置的大扰动（LoRA + 软阈值）下饱和/发散，再次印证 7.5 的"稳定性>信息量"，但**稳定失败
+   的是 margin 类而非 loglik**。
+3. **softmax_prob（温度缩放置信度）≈ 硬 0/1（0.787 vs 0.790）**：归一化置信度虽提供密度梯度但
+   几乎无增益——纯 ES 下 z-score 已把相对强度归一化，额外连续置信度信息被覆盖。
+4. **binary_conf（0/1×置信度）反而更差（0.712）**：对正确样本引入置信度缩放干扰了硬奖励的
+   稳定信噪比。
+
+**综合**：奖励函数的优劣**高度依赖训练配置**（规模、LR、可训练超参），不能一劳永逸地下结论。
+在新配置（大批次 + 可训练 v_th + 小固定 LR）下，**log-likelihood 是最佳奖励**，是当前 2 层网络
+突破 0.84 的有效手段；建议后续实验默认采用 loglik 而非硬 0/1。
+
+**复现**（WSL2 / GPU）：
+
+```bash
+wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 XLA_FLAGS='--xla_gpu_autotune_level=0' /root/hyperscalees-venv/bin/python exp_reward_sweep.py"
+```
+
+### 7.5.1（追加）改进目标：rank72 + 线性递减 LR + loglik 长程实验
+
+基于 7.5 重测"loglik 最优（0.8545）"的结论，进一步做三处叠加改进，观察 log-likelihood
+在更高 rank、LR 退火、更长训练下的表现（`exp_rank72_lrdecay.py`）：
+
+| 参数 | 7.5 重测（exp_reward_sweep） | 本次改进 |
+|---|---|---|
+| rank（LoRA） | 32 | **72** |
+| 学习率 | 固定 0.01 | **线性递减 0.01 → 0.001** |
+| epochs | 3000 | **10000** |
+| batch | 12000（0.2） | 6000（0.1，*为适配 rank72 显存下调*） |
+| 奖励 | loglik | loglik |
+
+```bash
+wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 XLA_FLAGS='--xla_gpu_autotune_level=1' nohup /root/hyperscalees-venv/bin/python exp_rank72_lrdecay.py > exp_rank72_lrdecay_wsl.log 2>&1 &"
+```
+
+**结果**：
+
+| 指标 | 7.5 重测（rank=32, 固定LR, 3000ep） | 本次（rank=72, 线性LR, 10000ep） |
+|---|---|---|
+| 终点 val_acc | 0.8545 | 0.8438 |
+| **训练峰值 val_acc** | 0.8545 | **0.8584**（epoch ~8600）|
+| best_train | 0.8220 | **0.8332** |
+
+**关键观察与结论：**
+
+1. **rank=72 提供了更大的可训练容量，学习能力确实更强**：best_train 从 0.8220 提至
+   **0.8332（+1.1pp）**，训练峰值 val 达 **0.8584**，双双**突破此前所有 2 层记录**
+   （原纪录 0.8545，+0.4pp）。rank 提升对 loglik 奖励下的学习是有帮助的。
+2. **但线性衰减尾部（lr≤0.002）导致验证集回落**：训练后期（epoch 9500-10000）best_train
+   持续微升（至 0.8332），但 val 在 0.84-0.85 波动、终点跌回 0.8438，低于峰值 0.8584。
+   说明**线性衰减到 0.001 过小 + 无 warmup 时，后期失去探索性、轻微过拟合**。
+3. **峰值出现在 lr≈0.0022（epoch ~8600）附近**：本配置下 LR 衰减到该区间时验证效果最佳，
+   之后继续衰减收益为负。若要保持 0.8584，可考虑**峰值早停**、或把衰减下界抬到 ~0.002
+   而非 0.001，或换用 warmup+cosine（见 7.6）等退火策略兼顾前期探索与后期收敛。
+4. **显存约束**：rank 从 32→72 使 LoRA 中间张量 `(batch,-,rank)` 扩大约 2.25 倍，
+   batch=12000 在 RTX 4090(24G) 直接 OOM，batch 需降至 6000。故本实验为
+   **rank 提升 + batch 下调 + LR 退火 + 更长训练** 的联合效果，非单一变量对照。
+
+**综合**：在 loglik 奖励 + 本次配置下，**rank=72 有效提升学习上限（best_train +1.1pp、
+峰值 val +0.4pp）**，但**单纯线性衰减到尾部的长训练会损失验证表现**；LR 退火策略须配合
+warmup 或提前停止，才可能把峰值 0.8584 稳定为终点成绩。
+
 ### 7.6 学习率调度对比实验（硬 0/1 奖励）
 
 基于 7.5 结论（硬 0/1 最稳健），用**硬 0/1 奖励 + 5 种 optax 学习率调度**各跑 1000 epoch
@@ -590,6 +673,102 @@ tau 冻结, 10000 epochs。
 ```bash
 wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS='--xla_gpu_autotune_level=1' /root/hyperscalees-venv/bin/python exp_vth_trainable.py fixed"
 wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS='--xla_gpu_autotune_level=1' /root/hyperscalees-venv/bin/python exp_vth_trainable.py cosine"
+```
+
+### 7.16 2 层网络参数扫描：T / sigma / noise_reuse / group_size（GPU / WSL2，2026-08）
+
+**背景**：验证多个潜在超参对 2 层网络精度的影响，确定各自收益边际。固定
+batch=12000, LR=0.03, **3000 epochs**, rank=32, v_th 可训练, 2 层 [128,128], 硬 0/1 奖励，
+用控制变量法（每维度只改一个参数，其余取基准 T=8 / sigma=0.2 / noise_reuse=0 / group_size=0）扫描
+（`exp_params_sweep.py`，基准配置为全维度重复的 baseline 点）。
+
+**配置**：2 层 [128,128], seed=0, 每配置 3000 epochs。
+
+| T | val_acc | | sigma | val_acc | | noise_reuse | val_acc | | group_size | val_acc |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 8 | 0.827 | | 0.1 | 0.752 | | 0 | 0.827 | | 0 | 0.827 |
+| 16 | 0.772 | | 0.2 | 0.827 | | 1 | 0.828 | | 50 | **0.840** |
+| 32 | 0.833 | | 0.3 | 0.828 | | 2 | 0.819 | | 100 | 0.757 |
+| 64 | **0.836** | | 0.4 | 0.723 | | 4 | 0.819 | | 200 | 0.762 |
+
+**结论：当前配置（T=8, sigma=0.2, 3000ep）本身已 0.827，group_size=50 是唯一明显增益点。**
+
+1. **T（时间步）**：增到 32/64 略升（0.833/0.836），比 T=8 高 0.6~0.9pp，已接近饱和；T=16
+   为异常低点（0.772）。提升有限，不是主要瓶颈。
+2. **sigma（扰动幅度）**：0.2~0.3 为最佳区间；0.1 过小（探索不足）+0.4 过大（破坏稳定）。
+   **当前 0.2 已最优，无提升空间**。
+3. **noise_reuse（扰动复用）**：batch=12000 下基本无增益（0.827~0.828 持平，2/4 略降）——
+   大批次梯度本身信噪比高，"复用降噪"收益被覆盖。
+4. **group_size（组内归一化）**：**50 为全场最佳（0.840，+1.3pp）**，但 100/200 反而大幅下降
+   （~0.76）——只在合适组大小时有利，需谨慎。
+
+**工程建议**：
+- sigma 与 noise_reuse 保持当前默认（已最优），无需调整。
+- **叠加 T=32 + group_size=50** 两个正向点有望把 2 层推到 ~0.84~0.85（待验证）。
+- 3000 epochs 本身就把 2 层大幅提升（对比 7.12 的 1000ep 0.757 → 0.827），训练时长是
+  2 层的重要增益来源。
+
+**复现**（WSL2 / GPU；扫描点在 `exp_params_sweep.py` 的 `SWEEP` 字典中可调）：
+
+```bash
+wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 XLA_FLAGS='--xla_gpu_autotune_level=0' /root/hyperscalees-venv/bin/python exp_params_sweep.py"
+```
+
+### 7.17 group_size 细粒度扫描（0~75）+ warmup+cosine(0.1) 调度对比（GPU / WSL2，2026-08）
+
+**背景**：7.16 在固定 LR=0.03 下发现 group_size=50 是唯一明显增益点（0.840，+1.3pp），
+但 100/200 大幅下降。本实验在 **warmup+cosine(base_lr=0.1)** 调度下把 group_size 细扫到
+0~75，验证是否另有性能高点，并揭示 **LR 调度对结论的主导性**。固定 batch=12000（0.2）、
+rank=32、v_th 可训练、2 层 [128,128]、T=8、sigma=0.2、3000 epochs（`exp_params_sweep.py`）。
+
+**注意（整除约束）**：`convert_fitnesses` 要求 batch(12000) 能被 group_size 整除，因此
+0~50 区间只测了 12000 的约数（5/10/15/20/30/40/48），50~75 区间只测了 50/60/75；
+55/65/70 等无法整除 12000，启动即报 `cannot reshape ... evenly divide`。
+
+**group_size 0~50 扫描结果**（warmup+cosine, base_lr=0.1）：
+
+| group_size | val_acc | best_train |
+|---|---|---|
+| 0 | 0.705 | 0.694 |
+| 5 | 0.713 | 0.724 |
+| 10 | 0.727 | 0.725 |
+| 15 | 0.728 | 0.722 |
+| 20 | 0.716 | 0.725 |
+| 30 | **0.778** | 0.763 |
+| 40 | 0.758 | 0.747 |
+| 48 | 0.653 | 0.655 |
+
+**group_size 50~75 扫描结果**（warmup+cosine, base_lr=0.1）：
+
+| group_size | val_acc | best_train |
+|---|---|---|
+| 50 | **0.757** | 0.748 |
+| 60 | 0.670 | 0.670 |
+| 75 | 0.647 | 0.650 |
+
+**结论**：
+
+1. **0~50 存在一个性能峰：group_size=30（0.778）**。趋势为低段缓慢上升（0→0.705,
+   15→0.728），到 30 出现明显跳升（0.778），40 回落（0.758），48 崩溃（0.653）。
+   即在该配置下 **约 30 是组内归一化的最优组大小**，而非越大越好。
+2. **50~75 区间单调退化**（50→0.757, 60→0.670, 75→0.647），每 +10 掉 ~0.08，
+   与 0~50 段在 30 之后的回落趋势衔接一致——**过大的组大小（>30）系统性有害**。
+3. **LR 调度对结论有决定性影响（本实验最重要的发现）**：同样 group_size=50，
+   固定 LR=0.03 时 0.840，而 warmup+cosine(0.1) 只有 0.757（-8.3pp）。warmup 峰值
+   base_lr=0.1 对 ES + 硬 0/1 奖励过激，整体拉低了所有配置精度（本次全场最高 0.778
+   < 固定 LR 基线 0.827）。**group_size 的增益必须在固定小 LR 下评估，warmup+cosine(0.1)
+   不是合适调度**。
+4. 综合 7.16 + 本实验：group_size 在固定 LR=0.03 下的最优约为 50，整体趋势是**中等组大小
+   （30~50）最优，过小（<10）或过大（>50）都退化**。但由于不同 LR 下最优点会漂移，
+   group_size 精调的边际收益有限，且已被 LR 调度的主导效应掩盖。
+
+**下一步建议**：收益方向宜回到**固定 LR（0.03 附近）**并叠加 T=32（7.16 的正向点），
+而不是继续在 warmup+cosine(0.1) + group_size 上调参。
+
+**复现**（WSL2 / GPU；扫描点改 `exp_params_sweep.py` 的 `SWEEP`）：
+
+```bash
+wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 XLA_FLAGS='--xla_gpu_autotune_level=0' /root/hyperscalees-venv/bin/python exp_params_sweep.py"
 ```
 
 ## 8. 复现 / 使用方法

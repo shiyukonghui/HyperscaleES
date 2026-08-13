@@ -1,0 +1,9 @@
+param,value,val_acc,best_train
+group_size,0,0.70508,0.69383
+group_size,5,0.71289,0.72442
+group_size,10,0.72656,0.72475
+group_size,15,0.72754,0.72183
+group_size,20,0.71582,0.72542
+group_size,30,0.77832,0.76333
+group_size,40,0.75781,0.74667
+group_size,48,0.65332,0.65467

@@ -1,15 +1,21 @@
-"""2 层 SNN 参数扫描：T（时间步）/ sigma（扰动幅度）/ noise_reuse / group_size 控制变量法。
+"""2 层 SNN 奖励函数对比（重新测试文档 7.5 节，改用最新配置 + 固定 LR=0.01）。
 
-固定：batch=12000, LR=0.03, epochs=3000, rank=32, v_th 可训练, 2 层 [128,128], 硬 0/1 奖励。
-控制变量法：每个维度只改一个参数，其余取基准值（T=8, sigma=0.2, noise_reuse=0, group_size=0）。
+背景：
+  文档 7.5 只在 num_envs=128 / lr=0.03 的老配置下对比了 硬0/1 / log-likelihood / sigmoid
+  margin 三种奖励。本脚本改用最近的 2 层可训练 v_th 配置（batch=0.2、rank=32、T=8、
+  sigma=0.2、3000 epochs、group_size=0），学习率固定小 LR=0.01，系统对比更多种类的
+  奖励/适应度函数（含从网络检索到的温度缩放 softmax 概率、原始 margin 等设计）。
 
-设计：
-  - 每个配置（参数名-值）独立跑一遍，与 exp_vth_trainable.py 相同的 2 层可训练 v_th 模型。
-  - 每维度扫描后输出小计，最后汇总对比，确定各参数收益边际。
-  - 结果追加写盘（results_params_sweep.csv）。
+奖励函数（per-sample, 与 fitness_from_logits(logits, labels) 同接口）：
+  - binary          硬 0/1 离散奖励（7.5 基线）
+  - loglik          正确类 log_softmax（连续、无界，( -inf, 0 ]）——7.5 曾崩溃
+  - sigmoid_margin  sigmoid(正确类 logit - 最大其他类 logit)（连续、有界 (0,1)）——7.5 基线
+  - softmax_prob    正确类温度缩放 softmax 概率（连续、有界 (0,1)，归一化置信度）
+  - margin          正确类 logit - 最大其他类 logit 原始边距（连续、有符号、无界）
+  - binary_conf     硬 0/1 * softmax 置信度（稀疏但按置信度加权，兼顾稳定性与密度）
 
 用法：
-    python exp_params_sweep.py
+    python exp_reward_sweep.py
 """
 
 import csv
@@ -41,27 +47,81 @@ if not os.path.isdir(MNIST_DIR) and os.path.isdir("/mnt/d/Rust/snn_t1/mnist_data
 
 # ---- 固定配置 ----------------------------------------------------------------
 BATCH_RATIO = 0.2
-LR = 0.1           # warmup+cosine 的 peak 学习率
+LR = 0.01            # 固定小学习率（用户要求调低到固定 lr=0.01）
 RANK = 32
 MAX_EPOCHS = 3000
 TRAIN_TAU = False
 seed = 0
 VAL = 1024
 EVAL_EVERY = 50
+# 其他超参用 7.16 基线：T=8, sigma=0.2, noise_reuse=0, group_size=0
+T = 8
+SIGMA = 0.2
+NOISE_REUSE = 0
+GROUP_SIZE = 0
 
-# 固定非扫描维度（本实验：batch=0.2, LR 用 warmup+cosine(0.1), T=8, sigma=0.2）
-BASE = {"T": 8, "sigma": 0.2, "noise_reuse": 0, "group_size": 0}
-# 仅扫描 group_size 0~50。注意：convert_fitnesses 要求 batch(12000) 能被 group_size 整除，
-# 因此在 (0,50] 内只有 12000 的约数 5/10/15/20/24/30/40/48 是合法取值，加上 gs=0（无分组基线）。
-SWEEP = {
-    "group_size": [0, 5, 10, 15, 20, 30, 40, 48],
+CSV_PATH = "results_reward_sweep_lr001.csv"
+
+
+# ---- 奖励函数 ----------------------------------------------------------------
+def reward_binary(logits, labels):
+    """硬 0/1 离散奖励（稀疏）。(batch,) ∈ {0,1}。"""
+    pred = jnp.argmax(logits, axis=-1)
+    return (pred == labels).astype(jnp.float32)
+
+
+def reward_loglik(logits, labels):
+    """正确类 log_softmax（连续、无界，( -inf, 0 ]）。"""
+    return jax.nn.log_softmax(logits, axis=-1)[jnp.arange(logits.shape[0]), labels]
+
+
+def reward_sigmoid_margin(logits, labels):
+    """sigmoid(正确类 logit - 最大其他类 logit)，连续、有界 (0,1)。"""
+    logits_l = logits - jnp.max(logits, axis=-1, keepdims=True)
+    correct = logits_l[jnp.arange(logits.shape[0]), labels]
+    # 屏蔽正确类后取最大其他类
+    mask = jnp.arange(logits.shape[-1])[None, :] == labels[:, None]
+    other_max = jnp.where(mask, -jnp.inf, logits_l).max(axis=-1)
+    return jax.nn.sigmoid(correct - other_max)
+
+
+def reward_softmax_prob(logits, labels):
+    """正确类温度缩放 softmax 概率（连续、有界 (0,1)，归一化置信度）。"""
+    p = jax.nn.softmax(logits, axis=-1)
+    return p[jnp.arange(logits.shape[0]), labels]
+
+
+def reward_margin(logits, labels):
+    """正确类 logit - 最大其他类 logit 原始边距（连续、有符号、无界）。"""
+    logits_l = logits - jnp.max(logits, axis=-1, keepdims=True)
+    correct = logits_l[jnp.arange(logits.shape[0]), labels]
+    mask = jnp.arange(logits.shape[-1])[None, :] == labels[:, None]
+    other_max = jnp.where(mask, -jnp.inf, logits_l).max(axis=-1)
+    return correct - other_max
+
+
+def reward_binary_conf(logits, labels):
+    """硬 0/1 * softmax 置信度：稀疏但按置信度加权，兼顾稳定性与梯度密度。"""
+    binary = reward_binary(logits, labels)
+    p = jax.nn.softmax(logits, axis=-1)
+    conf = p[jnp.arange(logits.shape[0]), labels]
+    return binary * conf
+
+
+# 扫描的奖励函数（保留 7.5 的 3 个基线 + 网络检索/新设计的 3 个）
+REWARDS = {
+    "binary": reward_binary,
+    "loglik": reward_loglik,
+    "sigmoid_margin": reward_sigmoid_margin,
+    "softmax_prob": reward_softmax_prob,
+    "margin": reward_margin,
+    "binary_conf": reward_binary_conf,
 }
 
-CSV_PATH = "results_params_sweep_gs0_50_warmcos.csv"
 
-
+# ---- 模型 ---------------------------------------------------------------------
 class TrainableVthSNN2L(Model):
-    """2 层 SNN，v_th 可训练（softplus 参数化）。与 exp_vth_trainable.py 同款但固定 2 层。"""
+    """2 层 SNN，v_th 可训练（softplus 参数化）。与 exp_params_sweep.py 同款固定 2 层。"""
 
     @classmethod
     def rand_init(cls, key, in_dim, hidden_dims, num_classes, tau_m=20.0,
@@ -107,9 +167,9 @@ x_te, y_te = get_mnist_arrays("test", data_dir=MNIST_DIR)
 n_train = x_tr.shape[0]
 num_envs = int(round(BATCH_RATIO * n_train))
 
-# ---- 模型 / noiser 初始化（T 只影响 forward，noiser 与参数有关，每个配置全建）
-def build(T, sigma, noise_reuse, group_size):
-    """按给定参数构建模型 + noiser + JIT，返回 run()（跑满 MAX_EPOCHS）。"""
+
+# 每个奖励函数独立建模型+noiser，跑满 MAX_EPOCHS，返回 (last_val, best_train)
+def run_reward(reward_fn):
     key = jax.random.key(seed)
     model_key, es_key, dkey = jax.random.split(key, 3)
     frozen_p, p0, scan_map, es_map = TrainableVthSNN2L.rand_init(
@@ -117,15 +177,12 @@ def build(T, sigma, noise_reuse, group_size):
         num_classes=NUM_CLASSES, tau_m=20.0, v_th=0.3, dtype=DTYPE,
     )
     es_tree_key = simple_es_tree_key(p0, es_key, scan_map)
-    # warmup+cosine 调度：peak LR(0.1)，warmup 后余弦衰减（与 exp_lr_schedule.py 的 warmcos 同口径）
-    lr_sched = optax.warmup_cosine_decay_schedule(
-        init_value=0.0, peak_value=LR, warmup_steps=max(10, MAX_EPOCHS // 10),
-        decay_steps=MAX_EPOCHS, end_value=LR * 0.05,
-    )
+    # 固定小学习率（用户指定 lr=0.01）
+    lr_sched = LR
     frozen_noiser, n0 = NOISER.init_noiser(
-        p0, sigma, lr_sched, solver=optax.adamw,
+        p0, SIGMA, lr_sched, solver=optax.adamw,
         solver_kwargs={"b1": 0.9, "b2": 0.999}, rank=RANK,
-        noise_reuse=noise_reuse, group_size=group_size,
+        noise_reuse=NOISE_REUSE, group_size=GROUP_SIZE,
     )
     jit_forward = jax.jit(jax.vmap(
         lambda n, p, i, x: TrainableVthSNN2L.forward(
@@ -138,7 +195,7 @@ def build(T, sigma, noise_reuse, group_size):
     jit_update = jax.jit(lambda n, p, f, i: NOISER.do_updates(
         frozen_noiser, n, p, es_tree_key, f, i, es_map))
 
-    # 用可变容器保存步间状态，避免依赖模块级 global（每个配置独立）
+    # 用可变容器保存步间状态，避免依赖模块级 global
     state = {"data_key": dkey, "noiser_params": n0, "params": p0}
 
     def eval_acc():
@@ -159,68 +216,54 @@ def build(T, sigma, noise_reuse, group_size):
         it = (jnp.full(num_envs, epoch, dtype=jnp.int32),
               jnp.arange(num_envs, dtype=jnp.int32))
         logits = jit_forward(state["noiser_params"], state["params"], it, spikes)
-        raw = fitness_from_logits(logits, labels)
+        raw = reward_fn(logits, labels)
         fits = NOISER.convert_fitnesses(frozen_noiser, state["noiser_params"], raw)
         state["noiser_params"], state["params"] = jit_update(
             state["noiser_params"], state["params"], fits, it)
         return float(accuracy_from_logits(logits, labels))
 
-    def run():
-        # 标定 10 次（含 JIT）
-        best = 0.0
-        for e in range(10):
-            acc = step(e)
-            best = max(best, acc)
-        last_val = 0.0
-        epoch = 10
-        while epoch < MAX_EPOCHS:
-            acc = step(epoch)
-            best = max(best, acc)
-            epoch += 1
-            if epoch % EVAL_EVERY == 0:
-                last_val = eval_acc()
-        if last_val == 0.0:
+    # 标定 10 次（含 JIT）
+    best = 0.0
+    for e in range(10):
+        acc = step(e)
+        best = max(best, acc)
+    last_val = 0.0
+    epoch = 10
+    while epoch < MAX_EPOCHS:
+        acc = step(epoch)
+        best = max(best, acc)
+        epoch += 1
+        if epoch % EVAL_EVERY == 0:
             last_val = eval_acc()
-        return last_val, best
-
-    return run
+    if last_val == 0.0:
+        last_val = eval_acc()
+    return last_val, best
 
 
 def main():
     print(f"固定: batch={num_envs}, lr={LR}, rank={RANK}, epochs={MAX_EPOCHS}, "
-          f"2 层 [128,128], v_th 可训练, 硬 0/1", flush=True)
-    print(f"基准值: {BASE}", flush=True)
+          f"2 层 [128,128], v_th 可训练, T={T}, sigma={SIGMA}, group_size={GROUP_SIZE}", flush=True)
 
     results = []
-    # 初始化 CSV
     fresh = not os.path.exists(CSV_PATH)
     with open(CSV_PATH, "a", newline="") as f:
         w = csv.writer(f)
         if fresh:
-            w.writerow(["param", "value", "val_acc", "best_train"])
+            w.writerow(["reward", "val_acc", "best_train"])
         f.flush()
 
-    # 控制变量法：每个维度只动一个
-    for param, values in SWEEP.items():
-        print(f"\n===== 扫描 {param} : {values} =====", flush=True)
-        for v in values:
-            cfg = dict(BASE)
-            cfg[param] = v
-            print(f"[{param}={v}] ...", flush=True)
-            run = build(**cfg)
-            val, best = run()
-            results.append((param, v, val, best))
-            with open(CSV_PATH, "a", newline="") as f:
-                csv.writer(f).writerow([param, v, round(val, 5), round(best, 5)])
-                f.flush()
-            print(f"  [{param}={v}] val_acc={val:.3f} best_train={best:.3f}", flush=True)
+    for name, fn in REWARDS.items():
+        print(f"[{name}] ...", flush=True)
+        val, best = run_reward(fn)
+        results.append((name, val, best))
+        with open(CSV_PATH, "a", newline="") as f:
+            csv.writer(f).writerow([name, round(val, 5), round(best, 5)])
+            f.flush()
+        print(f"  [{name}] val_acc={val:.4f} best_train={best:.4f}", flush=True)
 
-    print("\n===== 参数扫描汇总（控制变量法） =====")
-    for param in SWEEP:
-        print(f"--- {param} ---")
-        for p, v, val, best in results:
-            if p == param:
-                print(f"  {param}={v:>6}  val_acc={val:.4f}  best_train={best:.4f}")
+    print("\n===== 奖励函数对比汇总（固定 lr=0.01） =====")
+    for name, val, best in results:
+        print(f"  {name:<16}  val_acc={val:.4f}  best_train={best:.4f}")
     print(f"\nresults appended to {CSV_PATH}")
 
 

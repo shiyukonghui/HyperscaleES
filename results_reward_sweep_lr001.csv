@@ -1,0 +1,7 @@
+reward,val_acc,best_train
+binary,0.79004,0.77242
+loglik,0.85449,0.822
+sigmoid_margin,0.09766,0.106
+softmax_prob,0.78711,0.76283
+margin,0.09766,0.10608
+binary_conf,0.71191,0.69017

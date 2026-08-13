@@ -1,0 +1,2 @@
+rank,lr_start,lr_end,max_epochs,seed,val_acc,best_train
+72,0.01,0.001,10000,42,0.84375,0.83317
