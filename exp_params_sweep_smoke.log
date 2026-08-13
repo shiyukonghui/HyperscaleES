@@ -1,6 +1,0 @@
-[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
-固定: batch=12000, lr=0.03, rank=32, epochs=3000, 2 层 [128,128], v_th 可训练, 硬 0/1
-基准值: {'T': 8, 'sigma': 0.2, 'noise_reuse': 0, 'group_size': 0}
-
-===== 扫描 T : [8, 16, 32, 64] =====
-[T=8] ...
