@@ -907,3 +907,58 @@ wsl -d Ubuntu -u root -e bash -lc "cd /mnt/f/PythonProject/HyperscaleES && XLA_P
 - 单卡 CPU 上纯演化对 10 类 MNIST 收敛有限，建议 GPU + 大并行（`shard_map` 多卡版本可参考 `do_grpo_multi_gpu.py` / `general_do_evolution_multi_gpu.py`）。
 - LIF 阈值/`tau_m`/权重初始化需按输入量级人工校准；可考虑自适应阈值或权重初始化归一化改进鲁棒性。
 - **奖励设计**：硬 0/1 信息量低但稳定；单纯换用无界连续奖励（log-likelihood）在纯 ES 框架下会训练崩溃（见 7.5），需配合 clip/温度缩放/有界奖励（如 `sigmoid(margin)`）与 variance reduction 才能安全利用连续梯度。
+
+## 10. 8×4090 多卡放大训练（2026-08，服务器 172.18.12.5）
+
+**背景**：7.7/7.10 已确立"学习能力主要靠扩大并行批次×rank 放大"，但单卡 4090(24G) 在
+batch=12000 时 rank=128 直接 OOM（7.11），成为瓶颈。本次在 **8×RTX 4090（48GB/卡，合计 384GB）**
+服务器上把 **batch 放大到 60000（全量训练集，5×单卡）**、**rank 放大到 64/96/128（2~4×单卡边际点 32）**，
+验证 hyperscale 哲学并尝试突破单卡 0.85 平台。
+
+**部署与脚本**（`llm_experiments/snn_mnist_train_multi_gpu.py`）：
+- 本机 paramiko 直连（`pythonScript/ssh_remote.py`），`sudo systemctl stop vllm-server.service` 释放 8 卡，
+  `uv venv` + `jax[cuda13]` 搭建环境（驱动 580/CUDA 13），代码与 MNIST IDX 数据同步。
+- **`jax.pmap`** 把 batch 按设备分发（每设备内完成泊松编码 + 前向 + fitness，`jax.lax.pmean` 聚合准确率）；
+  thread_id 按设备切片保证跨卡噪声唯一；fitness 按设备堆叠 reshape 为全 batch 后走**复制式**
+  `do_updates`（各卡计算同一梯度，与 `general_do_evolution_multi_gpu.py` 一致）。
+- 注：初版用 `shard_map`/自动 SPMD，与 LIF 内部 `jax.lax.scan` 在 JAX 0.11 冲突（scan-vma 手动轴、
+  随机噪声标量无 mesh 上下文），`pmap` 每设备为普通局部计算，规避全部问题。
+
+**配置**：batch=60000、T=8、hidden=[128,128]、sigma=0.2、lr=0.01 固定、reward=**loglik**、
+v_th 可训练（softplus 恒正、逐层独立）、3000 epochs、seed=0。
+
+| rank | best_val | best_train | 用时(s) | GPU0 峰值(GiB) | 单 epoch |
+|---|---|---|---|---|---|
+| **64** | **0.9152** ⭐ | **0.8883** ⭐ | 333 | 26 | ~0.11s |
+| 96 | 0.9149 | 0.8880 | 355 | 42.6 | ~0.12s |
+| 128 | 0.9089 | 0.8840 | 389 | 44.3 | ~0.12s |
+| 单卡基线（batch=12000, rank=32, 3000ep） | 0.8545 | 0.8332 | — | — | — |
+
+**v_th 终值**：rank=64 → [0.479, 0.343]（从 0.3 上升，ES 自主调优）。
+
+**关键结论**：
+
+1. **突破单卡平台：best_val 0.9152（+5.7pp over 0.8545）、best_train 0.8883（+5.5pp over 0.8332）**。
+   批次 5×（12000→60000）+ rank 2×（32→64）+ 8 卡并行，直接把 7.10 预言的"0.75~0.8 平台"
+   大幅抬升到 **0.91+**，验证批次放大效应在更大规模下依然成立。
+2. **rank 收益边际在 64**：64→96 持平（0.9152→0.9149），96→128 反降（0.9089）。
+   与 7.11 单卡结论（边际在 32）一致：rank 过大后 LoRA 子空间收益饱和、噪声维度↑使 ES 探索更难。
+   **rank=64 为 8 卡 + 全量 batch 下的性价比平衡点**。
+3. **显存/速度**：复制式 `do_updates` 的 fc1 中间张量 ≈ (N, 784, rank) 是显存主约束——
+   rank=64/96/128 时 GPU0（承担更新）峰值 26/42.6/44.3GiB，48GB 均容纳；其余 7 卡仅承载前向分片
+   （rank 越高更新缓冲越大，8.8GB@rank128）。单 epoch ~0.11s，3000 epochs 约 5.5 分钟，远超单卡效率。
+4. **下一步方向**：a) 把更新也按设备分片（`jax.lax.all_reduce` 梯度）可解除复制式更新的显存墙，
+   让 batch=60000 + rank≥128 或更大 hidden 成为可能；b) 提高 T（16/32）与 group_size 精调；
+   c) 换 warmup+cosine(base_lr=0.1) 等调度在超大 batch 下复测。
+
+**复现**（服务器，先 `sudo systemctl stop vllm-server.service` 释放 8 卡）：
+
+```bash
+cd ~/HyperscaleES
+export XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+.venv/bin/python -m llm_experiments.snn_mnist_train_multi_gpu \
+    --batch 60000 --rank 64 --num-epochs 3000 \
+    --mnist-dir ~/mnist_data --csv-out records/results_multigpu_b60000_r64.csv
+```
+
+结果 CSV：`records/results_multigpu_b60000_r{64,96,128}.csv`。
