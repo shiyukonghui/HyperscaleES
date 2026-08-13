@@ -1,0 +1,196 @@
+[sweep] rank=  64  accumulate= 5  chunk=12000  ...
+  -> best_val=0.9137  best_train=0.8868
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+[plot] saved records/rank_sweep/accuracy_vs_rank.png
+[sweep] rank=  96  accumulate= 5  chunk=12000  ...
+  -> best_val=0.0000  best_train=0.0000
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+[plot] saved records/rank_sweep/accuracy_vs_rank.png
+[sweep] rank= 128  accumulate= 5  chunk=12000  ...
+  -> best_val=0.0000  best_train=0.0000
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+[plot] saved records/rank_sweep/accuracy_vs_rank.png
+[sweep] rank= 256  accumulate=10  chunk= 6000  ...
+  -> best_val=0.0000  best_train=0.0000
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+[plot] saved records/rank_sweep/accuracy_vs_rank.png
+[sweep] rank= 512  accumulate=20  chunk= 3000  ...
+  -> best_val=0.0000  best_train=0.0000
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+[plot] saved records/rank_sweep/accuracy_vs_rank.png
+[sweep] rank=1024  accumulate=40  chunk= 1500  ...
+  -> best_val=0.0000  best_train=0.0000
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:78: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.tight_layout()
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21333 (\N{CJK UNIFIED IDEOGRAPH-5355}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 21345 (\N{CJK UNIFIED IDEOGRAPH-5361}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 26799 (\N{CJK UNIFIED IDEOGRAPH-68AF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 24230 (\N{CJK UNIFIED IDEOGRAPH-5EA6}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 32047 (\N{CJK UNIFIED IDEOGRAPH-7D2F}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 31215 (\N{CJK UNIFIED IDEOGRAPH-79EF}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+/mnt/f/PythonProject/HyperscaleES/pythonScript/exp_rank_sweep_accumulate.py:79: UserWarning: Glyph 65306 (\N{FULLWIDTH COLON}) missing from font(s) DejaVu Sans.
+  plt.savefig(out_png, dpi=130)
+[plot] saved records/rank_sweep/accuracy_vs_rank.png
+
+=== rank 扫描完成 ===
+  rank=  64  best_val=0.9137  best_train=0.8868
+  rank=  96  best_val=0.0000  best_train=0.0000
+  rank= 128  best_val=0.0000  best_train=0.0000
+  rank= 256  best_val=0.0000  best_train=0.0000
+  rank= 512  best_val=0.0000  best_train=0.0000
+  rank=1024  best_val=0.0000  best_train=0.0000
+结果: records/rank_sweep/results.json
+图:   records/rank_sweep/accuracy_vs_rank.png

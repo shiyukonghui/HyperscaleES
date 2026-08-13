@@ -1,0 +1,38 @@
+[
+  {
+    "rank": 64,
+    "accumulate": 5,
+    "best_val": 0.9137,
+    "best_train": 0.886833
+  },
+  {
+    "rank": 96,
+    "accumulate": 5,
+    "best_val": 0.0,
+    "best_train": 0.0
+  },
+  {
+    "rank": 128,
+    "accumulate": 5,
+    "best_val": 0.0,
+    "best_train": 0.0
+  },
+  {
+    "rank": 256,
+    "accumulate": 10,
+    "best_val": 0.0,
+    "best_train": 0.0
+  },
+  {
+    "rank": 512,
+    "accumulate": 20,
+    "best_val": 0.0,
+    "best_train": 0.0
+  },
+  {
+    "rank": 1024,
+    "accumulate": 40,
+    "best_val": 0.0,
+    "best_train": 0.0
+  }
+]

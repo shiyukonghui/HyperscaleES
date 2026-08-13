@@ -1,0 +1,68 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+E0813 22:37:21.251934    1639 cuda_executor.cc:1176] [0] Failed to allocate device memory of 8.00GiB (8589934592 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0813 22:37:21.253592    1639 cuda_executor.cc:1176] [0] Failed to allocate device memory of 7.20GiB (7730940928 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0813 22:37:21.264918    1639 cuda_executor.cc:1176] [0] Failed to allocate device memory of 6.48GiB (6957846528 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0813 22:37:21.266511    1639 cuda_executor.cc:1176] [0] Failed to allocate device memory of 5.83GiB (6262061568 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0813 22:37:21.268844    1639 cuda_executor.cc:1176] [0] Failed to allocate device memory of 5.25GiB (5635855360 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+W0813 22:37:21.269057    1639 bfc_allocator.cc:363] Allocator (GPU_0_bfc) ran out of memory trying to allocate 5.23GiB from the lower end with freed_by_count=0. The caller indicates that this is not a failure, but this may mean that there could be performance gains if more memory were available.
+E0813 22:37:21.276465    1554 config_assigner.cc:478] Could not get config for HLO: %gemm_fusion_dot_general.10 = f32[12000,8,128]{2,1,0} fusion(%x.1, %loop_select_fusion), kind=kCustom, calls=
+(parameter_0.1: f32[12000,8,784], parameter_1.1: f32[12000,912,128]) -> f32[12000,8,128] {
+  %parameter_1.1 = f32[12000,912,128]{2,1,0} parameter(1)
+  %constant.2728 = f32[] constant(1.41421354), metadata={op_name="jit(<lambda>)/vmap(vmap(jit(_normal)))/jit(_normal_real)" stack_frame_id=60}
+  %mul.150 = f32[12000,912,128]{2,1,0} broadcast(%constant.2728), dimensions={}, metadata={op_name="jit(<lambda>)/vmap(vmap(jit(_normal)))/jit(_normal_real)/mul" stack_frame_id=60}
+  %mul.151 = f32[12000,912,128]{2,1,0} multiply(%parameter_1.1, %mul.150), metadata={op_name="jit(<lambda>)/vmap(vmap(jit(_normal)))/jit(_normal_real)/mul" stack_frame_id=60}
+  %slice.0 = f32[12000,784,128]{2,1,0} slice(%mul.151), slice={[0:12000], [0:784], [0:128]}, metadata={op_name="jit(<lambda>)/vmap(vmap())/slice" stack_frame_id=61}
+  %parameter_0.1 = f32[12000,8,784]{2,1,0} parameter(0)
+  %dot.12 = f32[12000,128,8]{1,2,0} dot(%slice.0, %parameter_0.1), lhs_batch_dims={0}, lhs_contracting_dims={1}, rhs_batch_dims={0}, rhs_contracting_dims={2}, metadata={op_name="jit(<lambda>)/vmap(vmap())/dot_general" stack_frame_id=62}
+  ROOT %bitcast.61 = f32[12000,8,128]{2,1,0} bitcast(%dot.12), metadata={op_name="jit(<lambda>)/vmap(vmap())/dot_general" stack_frame_id=62}
+}, metadata={op_name="jit(<lambda>)/vmap(vmap())/dot_general" stack_frame_id=62}, backend_config={"operation_queue_id":"0","fusion_backend_config":{"kind":"__triton_gemm"},"force_earliest_schedule":false,"reification_cost":[],"device_type":"DEVICE_TYPE_INVALID"}. Status: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 5.23GiB. [tf-allocator-allocation-error='']
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/integrations/tf_allocator_adapter.cc:269
+external/xla/xla/stream_executor/integrations/tf_allocator_adapter.cc:192
+external/xla/xla/stream_executor/gpu/redzone_allocator.cc:93
+external/xla/xla/stream_executor/gpu/redzone_allocator.cc:262
+external/xla/xla/service/gpu/autotuning/redzone_buffers.cc:107
+external/xla/xla/service/gpu/autotuning/redzone_buffers.cc:89
+external/xla/xla/backends/gpu/autotuner/gpu_profiler.cc:269
+external/xla/xla/backends/autotuner/config_runner.cc:69
+external/xla/xla/backends/autotuner/config_assigner.cc:417
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/mnt/f/PythonProject/HyperscaleES/llm_experiments/snn_mnist_train_accumulate.py", line 364, in <module>
+    main()
+    ~~~~^^
+  File "/mnt/f/PythonProject/HyperscaleES/llm_experiments/snn_mnist_train_accumulate.py", line 287, in main
+    _ = jit_forward(noiser_params, params, warm_it, warm_spikes)
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 5.23GiB. [tf-allocator-allocation-error='']
+--------------------
+For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+[env] devices=1 batch=60000 accumulate=5 chunk=12000 rank=128 T=8
+[data] train=60000 test=10000 dir=/mnt/f/PythonProject/HyperscaleES/data/MNIST/raw
+Compiling...

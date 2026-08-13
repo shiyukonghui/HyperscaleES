@@ -10,3 +10,4 @@ pretrain/cached_files/
 logs/
 *.pdf
 .pylibs/
+data
