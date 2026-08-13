@@ -1,0 +1,2 @@
+batch,sigma,lr_start,lr_end,max_epochs,val_acc,best_train
+512,0.2,0.01,0.001,3000,0.63086,0.5918
