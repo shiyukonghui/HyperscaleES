@@ -6,6 +6,10 @@
 >
 > 核心发现：**Hopfield 几乎精确复现 Softmax 注意力（w_err≈1e-8、cos_o≈1.0）且精度更高（best_val 0.580 vs 0.550）；
 > Mean-field 显著偏离 Softmax（w_err 0.029、cos_o 0.90）且精度/收敛更慢** —— 注意力等价性与性能正相关。
+>
+> 同时，两路注意力架构（best_val 0.55~0.58）**远低于同配置标准 SNN（best_val 0.9149）**，
+> 根因是注意力模型用「静态 sigmoid + 单层 QKV + softmax 池化」取代了标准 SNN 的「两层 LIF 时间递归 + ~45× 参数容量」，
+> 详见 [§5 准确率差距分析](#5-为什么注意力等价架构的准确率远低于标准-snn)。
 
 ---
 
@@ -110,7 +114,66 @@ Mean-field 的 `w_err` 从初期的 ~0.004 **随学习放大到中期的 ~0.08**
 
 ---
 
-## 5. 结论
+## 5. 为什么注意力等价架构的准确率远低于标准 SNN
+
+### 5.1 事实对比
+
+同样在 **batch=60000、rank=64、3000 epochs、累积架构** 下（等价性已被 `--verify` 证明成立），准确率差距 ~0.33 是**结构性差异**，不是训练超参或累积实现的偏差：
+
+| 架构 | best_val | best_train | 模型 |
+|---|---:|---:|---|
+| 标准 SNN（TrainableVthSNN，[snn_mnist_train_accumulate.py](../llm_experiments/snn_mnist_train_accumulate.py)） | **0.9149** | **0.8853** | 784→128→128→10，2 层 LIF |
+| 注意力 Hopfield | 0.5800 | 0.5409 | 49→16 QKV + attention + 16→10 |
+| 注意力 Mean-field | 0.5500 | 0.4930 | 同上 |
+
+（标准 SNN 数据见 `records/results_accumulate.csv`；注意力数据见 `records/attention_accumulate/*.csv`。）
+
+### 5.2 根因一：参数容量差了约 45 倍
+
+- **标准 SNN**：`fc1 784→128`（≈100k）+ `fc2 128→128`（≈16k）+ `fc3 128→10` → **≈117k 参数**；
+- **注意力模型**：`q/k/v 49→16`（各 784）+ `out 16→10`（160）→ **≈2.5k 参数 + beta**。
+
+ES/Noiser 可优化的自由度少了一个数量级，3000 epochs 内能逼近的表征空间太小。
+
+### 5.3 根因二（核心）：用静态 `_rate_encode` 取代了 LIF 时间积分
+
+- 标准 SNN 有**两层真正的 LIF 时间动力学**（[snn.py](../src/hyperscalees/models/snn.py) 的 `run_lif`/`jax.lax.scan`）：二值脉冲沿 `T=8` 积分、膜电位非线性、发放门控，产生丰富的时间特征；
+- 注意力模型**没有 LIF**。`_rate_encode` 只是把投影电流的时间均值 `mean_p` 过 `sigmoid(gain·mean_p/(1+|mean_p|))`（[snn_attention.py](../src/hyperscalees/models/snn_attention.py)）——在一切脉冲动力学之前就把时间维压平了。整个"SNN"实际退化为一个**无时间结构的静态 MLP**。
+
+### 5.4 根因三：注意力本身贡献极小，退化为单层线性 + 池化
+
+实测 **Hopfield `w_err≈1e-8`、`cos_o=1.0`**（几乎精确等于 Softmax），因此注意力层 ≈ Softmax 池化。模型事实等价于：
+
+```
+patched 输入 → 线性 Q/K/V(49→16) → softmax 池化(16 tokens) → mean → 线性 16→10
+```
+
+即**单层特征提取 + 池化分类**，没有层级化非线性特征。而标准 SNN 是两层非线性 LIF 金字塔。
+
+### 5.5 根因四：patched 输入更难（丢空间结构）
+
+- 标准 SNN 输入**整个 28×28 展平 784 维**，逐像素交互；
+- 注意力模型输入是 **16 个 4×4=49 像素 patch**，无位置编码、无 patch 间空间关系，把强局部结构的 MNIST 变成了弱相关的 16 个独立 token——更差的归纳偏置。
+
+### 5.6 根因五：读出瓶颈
+
+- 注意力：`16 token → softmax 加权 → 按 token 均值 → 16 维 → 10 类`，信息被激进平均；
+- 标准 SNN：128 维隐层平均发放率 → 10 类，特征维度与容量都更足。
+
+### 5.7 次要因素
+
+- 注意力模型没有标准 `TrainableVthSNN` 的**逐层可训练 softplus `v_th`**；
+- 训练超参不同（注意力量用了 lr 0.03 warmup-cosine，标准为 lr 0.01）——但远小于上述结构性差距。
+
+### 5.8 一句话根因与改进方向
+
+**根因**：注意力等价架构用「静态 sigmoid 时间均值 + 单层 QKV 线性投影 + softmax 池化」取代了标准 SNN 的「两层 LIF 时间递归 + 117k 可学习参数」，同时还在更难的无位置 patched 输入上学习——所以 3000 epochs 只能到 ~0.58，而标准架构能到 ~0.91。
+
+**改进方向**（若要让注意力架构达到标准 SNN 水平）：Q/K/V 前加入真正的 LIF 时间编码、增大 `d_head`/加深 attention block、加入位置编码或改用展平输入、引入逐层可训练 `v_th`。这些能补回容量与归纳偏置，同时保留 Hopfield「≈Softmax」的生物合理性。
+
+---
+
+## 6. 结论
 
 1. **累积架构对注意力模型完全成立**：`--verify` 证明前向累积 + 全局 z-score + chunked einsum == 单大批次（精确 0），负对照非零——小批次等效大批次不仅适用于普通 SNN，也适用于两类注意力的 Q/K/V/读出全链路。
 
@@ -125,7 +188,7 @@ Mean-field 的 `w_err` 从初期的 ~0.004 **随学习放大到中期的 ~0.08**
 
 ---
 
-## 6. 复现
+## 7. 复现
 
 ```bash
 # WSL venv，单路训练（batch=60000, rank=64, 3000ep）
@@ -144,7 +207,7 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false /root/hyperscalees-venv/bin/python \
     --batch 60000 --rank 64 --num-epochs 3000 --mnist-dir /mnt/d/Rust/snn_t1/mnist_data
 ```
 
-## 7. 关键文件
+## 8. 关键文件
 
 - 累积训练脚本：[snn_attention_train_accumulate.py](../llm_experiments/snn_attention_train_accumulate.py)
 - 对比驱动：[exp_attention_accumulate_compare.py](../pythonScript/exp_attention_accumulate_compare.py)

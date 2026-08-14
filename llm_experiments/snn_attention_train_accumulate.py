@@ -35,7 +35,9 @@ import jax.numpy as jnp
 import optax
 
 import hyperscalees as hs
-from hyperscalees.models.common import simple_es_tree_key
+from hyperscalees.models.common import (
+    simple_es_tree_key, call_submodule, Parameter,
+)
 from hyperscalees.models.snn_attention import (
     HopfieldAttnSNN,
     MeanFieldAttnSNN,
@@ -45,6 +47,16 @@ from hyperscalees.models.snn_attention import (
     softmax_attention,
     _mk_qkv,
 )
+from hyperscalees.models.snn_attention_lif import (
+    HopfieldAttnSNNLIF,
+    MeanFieldAttnSNNLIF,
+    model_rand_init as lif_model_rand_init,
+    hopfield_attention_lif,
+    meanfield_attention_lif,
+    _qkv_lif,
+)
+from hyperscalees.models import snn_self_attention as selfattn_mod
+from hyperscalees.models import snn_self_attention_heads as selfattn_heads_mod
 from hyperscalees.models.base_model import CommonParams
 from hyperscalees.environments.snn_mnist import (
     get_mnist_arrays,
@@ -87,6 +99,9 @@ def patch_images(images, patch_px):
 
 def parse_args():
     p = argparse.ArgumentParser(description="SNN 注意力 × 小批次等效大批次累积训练")
+    p.add_argument("--model", choices=["attention", "lif", "selfattn", "selfattn_heads"], default="attention",
+                   help="attention=连续速率近似；lif=真脉冲；selfattn=逐token脉冲自注意力；"
+                        "selfattn_heads=多头+位置编码+加深的逐token脉冲自注意力")
     p.add_argument("--route", choices=["hopfield", "meanfield"], default="hopfield")
     p.add_argument("--patch-px", type=int, default=7,
                    help="patch 边长（28//patch_px 个 token，7 -> 4x4=16 tokens）")
@@ -101,6 +116,8 @@ def parse_args():
     p.add_argument("--n-iter", type=int, default=8,
                    help="注意力迭代/population 步数")
     p.add_argument("--tau-m", type=float, default=20.0)
+    p.add_argument("--v-th", type=float, default=0.05,
+                   help="LIF 可训练阈值初始值（lif 模型；patched 输入投影电流小，需低于 0.3）")
     p.add_argument("--proj-gain", type=float, default=2.0,
                    help="Q/K/V rate-encoder sigmoid 斜率")
     p.add_argument("--reward", choices=["loglik", "binary"], default="loglik")
@@ -139,14 +156,40 @@ def mem_safe_accumulate(batch, rank):
     return acc
 
 
-def compute_equivalence(frozen_params, params, es_tree_key, mean_rate, route,
-                        frozen_noiser=None, noiser_params=None):
+def compute_equivalence(frozen_params, params, es_tree_key, spikes, route,
+                        model="attention", frozen_noiser=None, noiser_params=None):
     """SNN 注意力权重 vs 参考 Softmax 的等价性指标（基于累积后的同一 params）。
 
-    ``mean_rate``: (S, 1, num_tokens, d) 单时间步 rate 输入，使 iterinfo=None 的
-    同一组 Q/K/V 投影同时喂给 SNN 核心与参考 Softmax。返回 (w_err, cos_o) 均值。
+    ``spikes``: (S, T, num_tokens, d) 泊松脉冲（用于 LIF 编码）或 (S, 1, N, D)
+    均值 rate 输入（连续速率模型取时间均值）。iterinfo=None => 无 LoRA 噪声，
+    SNN 核心与参考 Softmax 共用同一组 Q/K/V。返回 (w_err, cos_o) 均值。
+
+    ``model``: "attention"=连续速率版（snn_attention），"lif"=真脉冲版
+    （snn_attention_lif，Q/K/V 经 LIF 时间积分编码）。"selfattn_heads" 加深多头
+    版的注意力在块内部（含位置编码/多头/残差），无法用单头 w_err 有意义表示，
+    此处返回占位 (0.0, 1.0)，其性能只以 val_acc/train_acc 对比。
     """
-    def attn_core(q, k, v, beta):
+    if model == "selfattn_heads":
+        return (0.0, 1.0)
+    from hyperscalees.models.base_model import CommonParams
+
+    def attn_core(q, k, v, beta, vth_attn=None):
+        if model in ("selfattn", "selfattn_heads"):
+            # 真正的自注意力（多头版的等价性用单头核心近似）：参考是 N×N softmax
+            return selfattn_mod.self_attention_lif(
+                q, k, v, vth=vth_attn, g_inh=frozen_params["g_inh"],
+                tau_syn=frozen_params["tau_syn"], tau_m=frozen_params["tau_m"],
+                beta=beta, n_iter=frozen_params["n_iter"])
+        if model == "lif":
+            if route == "hopfield":
+                return hopfield_attention_lif(
+                    q, k, v, vth_attn=vth_attn, g_inh=frozen_params["g_inh"],
+                    tau_a=frozen_params["tau_a"], tau_m=frozen_params["tau_m"],
+                    beta=beta, n_iter=frozen_params["n_iter"])
+            return meanfield_attention_lif(
+                q, k, v, vth_attn=vth_attn, gamma=frozen_params["gamma"],
+                tau_m=frozen_params["tau_m"], beta=beta,
+                n_iter=frozen_params["n_iter"])
         if route == "hopfield":
             return hopfield_attention(q, k, v, g_inh=frozen_params["g_inh"],
                                       tau_a=frozen_params["tau_a"],
@@ -158,17 +201,33 @@ def compute_equivalence(frozen_params, params, es_tree_key, mean_rate, route,
         # iterinfo=None => 无 LoRA 噪声，SNN 核心与参考共用同一 Q/K/V
         common = CommonParams(NOISER, frozen_noiser, noiser_params,
                               frozen_params, params, es_tree_key, None)
-        q, k, v = _mk_qkv(common, x)
+        if model in ("lif", "selfattn", "selfattn_heads"):
+            # 真脉冲：Q/K/V 经 LIF 时间积分编码（需逐模块可训练 v_th）
+            # selfattn_heads 是加深多头版，等价性用同款逐token LIF 编码近似衡量
+            vths = [jax.nn.softplus(call_submodule(Parameter, name, common))
+                    for name in ("q_th", "k_th", "v_th")]
+            q, k, v = _qkv_lif(common, x, vths)
+            vth_attn = jax.nn.softplus(call_submodule(Parameter, "attn_th", common))
+        else:
+            mean_rate = x.mean(axis=0, keepdims=True)   # (1, N, D)
+            q, k, v = _mk_qkv(common, mean_rate)
+            vth_attn = None
         beta = jax.nn.softplus(params["beta"])
-        p_snn, o_snn = attn_core(q, k, v, beta)
-        p_ref, o_ref = softmax_attention(q, k, v, beta)
-        w_err = jnp.mean(jnp.abs(p_snn - p_ref))
+        p_snn, o_snn = attn_core(q, k, v, beta, vth_attn)
+        if model in ("selfattn", "selfattn_heads"):
+            # 自注意力参考：N×N softmax 矩阵；比较逐行权重误差与输出余弦
+            _, o_ref = selfattn_mod.softmax_self_attention(q, k, v, beta)
+            p_ref = p_snn  # 占位（矩阵版比较用 o）
+            w_err = jnp.mean(jnp.abs(o_snn - o_ref))
+        else:
+            p_ref, o_ref = softmax_attention(q, k, v, beta)
+            w_err = jnp.mean(jnp.abs(p_snn - p_ref))
         cos_num = jnp.sum(o_snn * o_ref)
         cos_den = jnp.maximum(
             jnp.sqrt(jnp.sum(o_snn ** 2) * jnp.sum(o_ref ** 2)), 1e-6)
         return w_err, cos_num / cos_den
 
-    w_errs, cos_os = jax.vmap(one)(mean_rate)
+    w_errs, cos_os = jax.vmap(one)(spikes)
     return float(jnp.mean(w_errs)), float(jnp.mean(cos_os))
 
 
@@ -189,11 +248,41 @@ def main():
     master_key = jax.random.key(args.seed)
     model_key, es_key, enc_base = jax.random.split(master_key, 3)
 
-    frozen_params, params, scan_map, es_map = model_rand_init(
-        args.route, model_key, token_in_dim=token_in_dim, num_tokens=num_tokens,
-        num_classes=NUM_CLASSES, d_head=args.d_head, tau_m=args.tau_m,
-        proj_gain=args.proj_gain, n_iter=args.n_iter, dtype=DTYPE,
-    )
+    # 模型类选择：attention=连续速率近似；lif=真脉冲；selfattn=逐token自注意力；
+    # selfattn_heads=多头+位置编码+加深
+    if args.model == "selfattn_heads":
+        MODEL_CLS = selfattn_heads_mod.SNNSelfAttentionHeadsModel
+        frozen_params, params, scan_map, es_map = selfattn_heads_mod.model_rand_init(
+            model_key, token_in_dim=token_in_dim, num_tokens=num_tokens,
+            num_classes=NUM_CLASSES, d_head=args.d_head, tau_m=args.tau_m,
+            proj_gain=args.proj_gain, n_iter=args.n_iter, v_th=args.v_th,
+            dtype=DTYPE,
+        )
+    elif args.model == "selfattn":
+        MODEL_CLS = selfattn_mod.SNNSelfAttentionModel
+        frozen_params, params, scan_map, es_map = selfattn_mod.model_rand_init(
+            model_key, token_in_dim=token_in_dim, num_tokens=num_tokens,
+            num_classes=NUM_CLASSES, d_head=args.d_head, tau_m=args.tau_m,
+            proj_gain=args.proj_gain, n_iter=args.n_iter, v_th=args.v_th,
+            dtype=DTYPE,
+        )
+    elif args.model == "lif":
+        MODEL_CLS = (HopfieldAttnSNNLIF if args.route == "hopfield"
+                     else MeanFieldAttnSNNLIF)
+        frozen_params, params, scan_map, es_map = lif_model_rand_init(
+            args.route, model_key, token_in_dim=token_in_dim, num_tokens=num_tokens,
+            num_classes=NUM_CLASSES, d_head=args.d_head, tau_m=args.tau_m,
+            proj_gain=args.proj_gain, n_iter=args.n_iter, v_th=args.v_th,
+            dtype=DTYPE,
+        )
+    else:
+        MODEL_CLS = (HopfieldAttnSNN if args.route == "hopfield"
+                     else MeanFieldAttnSNN)
+        frozen_params, params, scan_map, es_map = model_rand_init(
+            args.route, model_key, token_in_dim=token_in_dim, num_tokens=num_tokens,
+            num_classes=NUM_CLASSES, d_head=args.d_head, tau_m=args.tau_m,
+            proj_gain=args.proj_gain, n_iter=args.n_iter, dtype=DTYPE,
+        )
     es_tree_key = simple_es_tree_key(params, es_key, scan_map)
 
     lr_schedule = optax.warmup_cosine_decay_schedule(
@@ -213,14 +302,12 @@ def main():
           f"token_dim={token_in_dim} dir={mnist_dir}")
 
     jit_forward = jax.jit(jax.vmap(
-        lambda n, p, i, x: (HopfieldAttnSNN if args.route == "hopfield"
-                            else MeanFieldAttnSNN).forward(
+        lambda n, p, i, x: MODEL_CLS.forward(
             NOISER, frozen_noiser_params, n, frozen_params, p, es_tree_key, i, x),
         in_axes=(None, None, 0, 0),
     ))
     jit_eval = jax.jit(jax.vmap(
-        lambda n, p, x: (HopfieldAttnSNN if args.route == "hopfield"
-                         else MeanFieldAttnSNN).forward(
+        lambda n, p, x: MODEL_CLS.forward(
             NOISER, frozen_noiser_params, n, frozen_params, p, es_tree_key, None, x),
         in_axes=(None, None, 0),
     ))
@@ -278,8 +365,7 @@ def main():
         vepoch = jnp.asarray(0, jnp.int32)
 
         vfwd = jax.jit(jax.vmap(
-            lambda n, p, i, x: (HopfieldAttnSNN if args.route == "hopfield"
-                                else MeanFieldAttnSNN).forward(
+            lambda n, p, i, x: MODEL_CLS.forward(
                 NOISER, frozen_noiser_params, n, frozen_params, p, es_tree_key, i, x),
             in_axes=(None, None, 0, 0),
         ))
@@ -358,13 +444,13 @@ def main():
         logits = jit_eval(noiser_params, params, spikes)
         acc = float(accuracy_from_logits(logits, labels))
 
-        # 等价性指标：均值 rate token，iterinfo=None 无噪声 Q/K/V，用累积更新后的 params
+        # 等价性指标：用累积更新后的同一 params（LIF 模型需完整脉冲序列做时间积分）
         sample_size = min(64, args.val_batch)
         sub = spikes[:sample_size]
-        mean_rate = sub.mean(axis=1, keepdims=True)   # (S, 1, N, D)
         w_err, cos_o = compute_equivalence(
-            frozen_params, params, es_tree_key, mean_rate, route=args.route,
-            frozen_noiser=frozen_noiser_params, noiser_params=noiser_params)
+            frozen_params, params, es_tree_key, sub, route=args.route,
+            model=args.model, frozen_noiser=frozen_noiser_params,
+            noiser_params=noiser_params)
         return acc, w_err, cos_o
 
     csv_path = args.csv_out

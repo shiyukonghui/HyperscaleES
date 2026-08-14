@@ -1,0 +1,1 @@
+epoch,train_acc,val_acc,best_val,best_train,w_err,cos_o,epoch_time,cum_time
