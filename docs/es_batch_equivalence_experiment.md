@@ -225,6 +225,38 @@ assert d_AC > 1e-3   # naive 不等价
 
 ---
 
+## 7. rank 参数扫描（单卡累积 batch=60000）
+
+在 rank=64 复现成功的基础上，扫描 rank=64→1024（脚本 [exp_rank_sweep_accumulate.py](../pythonScript/exp_rank_sweep_accumulate.py)），
+考察 LoRA rank 对准确率的影响。因前向/更新 LoRA 噪声张量 `B=(chunk,784,rank)` 随 rank 线性增长，
+高 rank 需缩小 chunk（增大 accumulate）以保持 `B≈2.4GB`（24GB 显存内）。
+
+### 7.1 结果
+
+| rank | accumulate | chunk | best_val | best_train |
+|---:|---:|---:|---:|---:|
+| 64 | 5 | 12000 | 0.9137 | 0.8868 |
+| 96 | 8 | 7500 | 0.9120 | 0.8865 |
+| 128 | 10 | 6000 | 0.9118 | 0.8845 |
+| **256** | **20** | 3000 | **0.9152** | **0.8914** |
+| 512 | 40 | 1500 | 0.9109 | 0.8842 |
+| 1024 | 80 | 750 | 0.9116 | 0.8892 |
+
+图：[accuracy_vs_rank.png](../records/rank_sweep/accuracy_vs_rank.png)（rank 用 log2 坐标）。
+
+### 7.2 结论
+
+1. **rank 在 64~1024 范围内对准确率影响很弱（曲线平坦）**：best_val 波动于 0.9109~0.9152，极差仅 0.0043，
+   与单次运行的噪声量级（~0.003~0.005，如 rank=64 两次运行 0.9149 vs 0.9137）相当。
+2. **rank=256 为峰值 0.9152**，略优于 rank=64（0.9137）与 rank=96/128（0.9120/0.9118），但优势在噪声范围内。
+3. **修正文档 §10 的"rank 收益边际在 64、rank 过大退化"结论**：在大 batch=60000 下，rank 从 64 放大到 1024
+   **并未显著退化**（与 §10 单卡 batch=12000 下"边际在 32"的结论不同）。原因是 batch 放大后，ES 梯度估计
+   方差下降，rank 的容量/探索权衡被 batch 主导——**batch 规模是主要杠杆，rank 是次要超参**。
+4. **显存-精度权衡**：rank 越大，`B=(chunk,784,rank)` 越大，需更小 chunk（accumulate 5→80），单 epoch 越慢
+   （rank=1024 约 0.57s/epoch vs rank=64 的 0.19s/epoch）。精度增益却基本为零，故 **rank=64 仍是性价比最优**。
+
+---
+
 ## 附录 A：复现步骤
 
 ```bash
