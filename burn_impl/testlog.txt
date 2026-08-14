@@ -1,0 +1,48 @@
+﻿cargo : [1m[92m    Finished[0m ]8;;https://doc.rust-lang.org/cargo/reference/profiles.html#default-profiles\`test`
+ profile [unoptimized + debuginfo]]8;;\ target(s) in 0.80s
+At line:15 char:5569
++ ... caleES\burn_impl"; cargo test -p hyperscalees-models snn 2>&1 | Out-F ...
++                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([1m[92m    Fi...get(s) in 0.80s:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\deps\hyperscalees_models-637558ff44263733.exe)
+
+running 9 tests
+test snn::tests::lif_step_subthreshold_current_never_fires ... ok
+test snn::tests::lif_step_suprathreshold_current_fires ... ok
+test snn::tests::run_lif_silent_with_negative_current ... ok
+test snn::tests::lif_step_accumulates_then_fires ... ok
+test snn::tests::run_lif_shape_and_firing ... FAILED
+test snn::tests::snn_rand_init_struct_and_es_map ... ok
+test snn::tests::snn_forward_reproducible_across_calls ... FAILED
+test snn::tests::snn_forward_clean_deterministic_and_shaped ... ok
+test snn::tests::snn_forward_noised_differs_from_clean ... ok
+
+failures:
+
+---- snn::tests::run_lif_shape_and_firing stdout ----
+
+thread 'snn::tests::run_lif_shape_and_firing' (31700) panicked at hyperscalees-models\src\snn.rs:302:9:
+assertion `left == right` failed
+  left: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+ right: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- snn::tests::snn_forward_reproducible_across_calls stdout ----
+
+thread 'snn::tests::snn_forward_reproducible_across_calls' (1688) panicked at C:\Users\wyl\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\burn-tensor-0.21.0\src\tensor\api\base.rs:762:9:
+=== Tensor Operation Error ===
+  Operation: 'Squeeze'
+  Reason:
+    1. Resulting dimensions 1 do not match the required D2 size 2. 
+
+
+
+failures:
+    snn::tests::run_lif_shape_and_firing
+    snn::tests::snn_forward_reproducible_across_calls
+
+test result: FAILED. 7 passed; 2 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+[1m[91merror[0m: test failed, to rerun pass `-p hyperscalees-models --lib`

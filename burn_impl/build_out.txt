@@ -1,0 +1,16 @@
+﻿cargo : [1m[92m   Compiling[0m hyperscalees-models v0.1.0 (E:\pythonProject\HyperscaleES\burn_impl\hyperscalees-mode
+ls)
+At line:15 char:5523
++ ... pgrep\bin'; cargo test -p hyperscalees-models --message-format=short  ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([1m[92m   Com...scalees-models):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+hyperscalees-models\src\snn.rs:90:17: [1m[91merror[E0308][0m: mismatched types: expected `3`, found `2`
+hyperscalees-models\src\snn.rs:133:17: [1m[91merror[E0308][0m: mismatched types: expected `3`, found `2`
+hyperscalees-models\src\snn.rs:226:32: [1m[91merror[E0308][0m: mismatched types: expected `2`, found `3`
+[1m[91merror[0m: could not compile `hyperscalees-models` (lib) due to 3 previous errors
+[1m[93mwarning[0m: build failed, waiting for other jobs to finish...
+hyperscalees-models\src\snn.rs:341:24: [1m[91merror[E0382][0m: use of moved value: `out1`: value used here after mov
+e
+[1m[91merror[0m: could not compile `hyperscalees-models` (lib test) due to 4 previous errors

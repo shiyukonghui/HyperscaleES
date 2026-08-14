@@ -1,0 +1,7 @@
+﻿cargo : [1m[91merror[0m: could not find `Cargo.toml` in `E:\pythonProject\HyperscaleES` or any parent directory
+At line:15 char:5523
++ ... \@vscode\ripgrep\bin'; cargo test -p hyperscalees-models 2>&1 | Out-F ...
++                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([1m[91merror...arent directory:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
