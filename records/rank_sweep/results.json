@@ -7,32 +7,32 @@
   },
   {
     "rank": 96,
-    "accumulate": 5,
-    "best_val": 0.0,
-    "best_train": 0.0
+    "accumulate": 8,
+    "best_val": 0.912,
+    "best_train": 0.88645
   },
   {
     "rank": 128,
-    "accumulate": 5,
-    "best_val": 0.0,
-    "best_train": 0.0
+    "accumulate": 10,
+    "best_val": 0.9118,
+    "best_train": 0.884533
   },
   {
     "rank": 256,
-    "accumulate": 10,
-    "best_val": 0.0,
-    "best_train": 0.0
+    "accumulate": 20,
+    "best_val": 0.9152,
+    "best_train": 0.8914
   },
   {
     "rank": 512,
-    "accumulate": 20,
-    "best_val": 0.0,
-    "best_train": 0.0
+    "accumulate": 40,
+    "best_val": 0.9109,
+    "best_train": 0.88415
   },
   {
     "rank": 1024,
-    "accumulate": 40,
-    "best_val": 0.0,
-    "best_train": 0.0
+    "accumulate": 80,
+    "best_val": 0.9116,
+    "best_train": 0.889183
   }
 ]

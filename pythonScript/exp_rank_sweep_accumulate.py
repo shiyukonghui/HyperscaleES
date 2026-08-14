@@ -22,9 +22,11 @@ MNIST_DIR = "/mnt/f/PythonProject/HyperscaleES/data/MNIST/raw"
 OUT_DIR = "records/rank_sweep"
 RANKS = [64, 96, 128, 256, 512, 1024]
 
-# 内存安全映射：chunk × 784 × rank × 4 ≤ ~4.8GB（B 矩阵），即 chunk ≈ 1.53e6/rank
+# 内存安全映射：chunk × 784 × rank × 4 ≤ ~2.4GB（B 矩阵）。
+# 注：rank=64/chunk=12000（B=2.4GB）实测稳定；rank=96/chunk=12000（B=3.6GB）前向 OOM，
+# 故目标取 2.4GB（0.765e6 = 2.4e9 / 3136）。
 def mem_safe_accumulate(rank):
-    max_chunk = max(1, int(1.53e6 / rank))       # 保持 B ≈ 4.8GB
+    max_chunk = max(1, int(0.765e6 / rank))       # 保持 B ≈ 2.4GB
     max_chunk = min(max_chunk, 12000)            # 低 rank 时 cap 到 12000（已知稳定配置）
     accumulate = BATCH // max_chunk
     if accumulate < 1:
@@ -71,7 +73,7 @@ def plot(results, out_png):
     plt.xticks(ranks, [str(r) for r in ranks])
     plt.xlabel("LoRA rank (log2)")
     plt.ylabel("accuracy")
-    plt.title("单卡 24GB 梯度累积 batch=60000：accuracy vs rank")
+    plt.title("Single-GPU 24GB accumulate batch=60000: accuracy vs rank")
     plt.ylim(min(vals + trains) - 0.02, max(vals + trains) + 0.02)
     plt.legend()
     plt.grid(alpha=0.3, which="both")
@@ -83,11 +85,24 @@ def plot(results, out_png):
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    results = []
     results_json = os.path.join(OUT_DIR, "results.json")
     plot_png = os.path.join(OUT_DIR, "accuracy_vs_rank.png")
 
+    # 断点续跑：已成功（best_val>0）的 rank 跳过，避免重复训练
+    results = []
+    done_ranks = set()
+    if os.path.exists(results_json):
+        with open(results_json) as f:
+            prev = json.load(f)
+        for r in prev:
+            if r.get("best_val", 0.0) > 0.0:
+                results.append(r)
+                done_ranks.add(r["rank"])
+
     for rank in RANKS:
+        if rank in done_ranks:
+            print(f"[sweep] rank={rank:4d}  已完成(best_val={next(r['best_val'] for r in results if r['rank']==rank):.4f})，跳过", flush=True)
+            continue
         acc = mem_safe_accumulate(rank)
         chunk = BATCH // acc
         csv_path = os.path.join(OUT_DIR, f"r{rank}.csv")
