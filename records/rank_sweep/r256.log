@@ -1,68 +1,368 @@
 [transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
-E0813 22:37:31.503103    1945 cuda_executor.cc:1176] [0] Failed to allocate device memory of 8.00GiB (8589934592 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
-=== Source Location Trace: ===
+E0814 08:26:07.943030     640 cuda_executor.cc:1176] [0] Failed to allocate device memory of 4.00GiB (4294967296 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
 external/xla/xla/stream_executor/cuda/cuda_status.cc:45
 external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
 external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
 
-E0813 22:37:31.504380    1945 cuda_executor.cc:1176] [0] Failed to allocate device memory of 7.20GiB (7730940928 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
-=== Source Location Trace: ===
+E0814 08:26:08.134804     640 cuda_executor.cc:1176] [0] Failed to allocate device memory of 4.00GiB (4294967296 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
 external/xla/xla/stream_executor/cuda/cuda_status.cc:45
 external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
 external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
 
-E0813 22:37:31.514976    1945 cuda_executor.cc:1176] [0] Failed to allocate device memory of 6.48GiB (6957846528 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
-=== Source Location Trace: ===
+E0814 08:26:08.919503     556 cuda_executor.cc:1176] [0] Failed to allocate device memory of 8.00GiB (8589934592 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
 external/xla/xla/stream_executor/cuda/cuda_status.cc:45
 external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
 external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
 
-E0813 22:37:31.515903    1945 cuda_executor.cc:1176] [0] Failed to allocate device memory of 5.83GiB (6262061568 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
-=== Source Location Trace: ===
+E0814 08:26:08.920422     556 cuda_executor.cc:1176] [0] Failed to allocate device memory of 7.20GiB (7730940928 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
 external/xla/xla/stream_executor/cuda/cuda_status.cc:45
 external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
 external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
 
-E0813 22:37:31.516864    1945 cuda_executor.cc:1176] [0] Failed to allocate device memory of 5.25GiB (5635855360 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
-=== Source Location Trace: ===
+E0814 08:26:08.921457     556 cuda_executor.cc:1176] [0] Failed to allocate device memory of 6.48GiB (6957846528 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
 external/xla/xla/stream_executor/cuda/cuda_status.cc:45
 external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
 external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
 
-W0813 22:37:31.517022    1945 bfc_allocator.cc:363] Allocator (GPU_0_bfc) ran out of memory trying to allocate 5.23GiB from the lower end with freed_by_count=0. The caller indicates that this is not a failure, but this may mean that there could be performance gains if more memory were available.
-E0813 22:37:31.629233    1855 config_assigner.cc:478] Could not get config for HLO: %gemm_fusion_dot_general.10 = f32[6000,8,256]{2,1,0} fusion(%x.1, %loop_select_fusion), kind=kCustom, calls=
-(parameter_0.1: f32[6000,8,784], parameter_1.1: f32[6000,912,256]) -> f32[6000,8,256] {
-  %parameter_1.1 = f32[6000,912,256]{2,1,0} parameter(1)
-  %constant.2728 = f32[] constant(1.41421354), metadata={op_name="jit(<lambda>)/vmap(vmap(jit(_normal)))/jit(_normal_real)" stack_frame_id=60}
-  %mul.150 = f32[6000,912,256]{2,1,0} broadcast(%constant.2728), dimensions={}, metadata={op_name="jit(<lambda>)/vmap(vmap(jit(_normal)))/jit(_normal_real)/mul" stack_frame_id=60}
-  %mul.151 = f32[6000,912,256]{2,1,0} multiply(%parameter_1.1, %mul.150), metadata={op_name="jit(<lambda>)/vmap(vmap(jit(_normal)))/jit(_normal_real)/mul" stack_frame_id=60}
-  %slice.0 = f32[6000,784,256]{2,1,0} slice(%mul.151), slice={[0:6000], [0:784], [0:256]}, metadata={op_name="jit(<lambda>)/vmap(vmap())/slice" stack_frame_id=61}
-  %parameter_0.1 = f32[6000,8,784]{2,1,0} parameter(0)
-  %dot.12 = f32[6000,256,8]{1,2,0} dot(%slice.0, %parameter_0.1), lhs_batch_dims={0}, lhs_contracting_dims={1}, rhs_batch_dims={0}, rhs_contracting_dims={2}, metadata={op_name="jit(<lambda>)/vmap(vmap())/dot_general" stack_frame_id=62}
-  ROOT %bitcast.61 = f32[6000,8,256]{2,1,0} bitcast(%dot.12), metadata={op_name="jit(<lambda>)/vmap(vmap())/dot_general" stack_frame_id=62}
-}, metadata={op_name="jit(<lambda>)/vmap(vmap())/dot_general" stack_frame_id=62}, backend_config={"operation_queue_id":"0","fusion_backend_config":{"kind":"__triton_gemm"},"force_earliest_schedule":false,"reification_cost":[],"device_type":"DEVICE_TYPE_INVALID"}. Status: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 5.23GiB. [tf-allocator-allocation-error='']
-=== Source Location Trace: ===
-external/xla/xla/stream_executor/integrations/tf_allocator_adapter.cc:269
-external/xla/xla/stream_executor/integrations/tf_allocator_adapter.cc:192
-external/xla/xla/stream_executor/gpu/redzone_allocator.cc:93
-external/xla/xla/stream_executor/gpu/redzone_allocator.cc:262
-external/xla/xla/service/gpu/autotuning/redzone_buffers.cc:107
-external/xla/xla/service/gpu/autotuning/redzone_buffers.cc:89
-external/xla/xla/backends/gpu/autotuner/gpu_profiler.cc:269
-external/xla/xla/backends/autotuner/config_runner.cc:69
-external/xla/xla/backends/autotuner/config_assigner.cc:417
+E0814 08:26:08.922482     556 cuda_executor.cc:1176] [0] Failed to allocate device memory of 5.83GiB (6262061568 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
 
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "/mnt/f/PythonProject/HyperscaleES/llm_experiments/snn_mnist_train_accumulate.py", line 364, in <module>
-    main()
-    ~~~~^^
-  File "/mnt/f/PythonProject/HyperscaleES/llm_experiments/snn_mnist_train_accumulate.py", line 287, in main
-    _ = jit_forward(noiser_params, params, warm_it, warm_spikes)
-jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 5.23GiB. [tf-allocator-allocation-error='']
---------------------
-For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
-[env] devices=1 batch=60000 accumulate=10 chunk=6000 rank=256 T=8
+E0814 08:26:08.923385     556 cuda_executor.cc:1176] [0] Failed to allocate device memory of 5.25GiB (5635855360 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0814 08:26:08.924380     556 cuda_executor.cc:1176] [0] Failed to allocate device memory of 4.72GiB (5072269824 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+E0814 08:26:08.925339     556 cuda_executor.cc:1176] [0] Failed to allocate device memory of 4.25GiB (4565042688 bytes): RESOURCE_EXHAUSTED: : CUDA_ERROR_OUT_OF_MEMORY: out of memory
+=== Source Location Trace: === 
+external/xla/xla/stream_executor/cuda/cuda_status.cc:45
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:226
+external/xla/xla/stream_executor/cuda/cuda_device_allocator.cc:403
+
+[env] devices=1 batch=60000 accumulate=20 chunk=3000 rank=256 T=8
 [data] train=60000 test=10000 dir=/mnt/f/PythonProject/HyperscaleES/data/MNIST/raw
 Compiling...
+LORA UPDATE (3000, 128, 256) (3000, 784, 256)
+LORA UPDATE (3000, 128, 256) (3000, 128, 256)
+LORA UPDATE (3000, 10, 256) (3000, 128, 256)
+Warm-up done in 8.9s
+LORA UPDATE (3000, 128, 256) (3000, 784, 256)
+LORA UPDATE (3000, 128, 256) (3000, 128, 256)
+LORA UPDATE (3000, 10, 256) (3000, 128, 256)
+epoch     0 | train_acc 0.0845 | best 0.0845 | val_acc 0.0980 | best_val 0.0980 | 6.38s | cum 6.4s
+epoch    10 | train_acc 0.0839 | best 0.0858 | 0.61s | cum 12.1s
+epoch    20 | train_acc 0.0877 | best 0.0877 | 0.61s | cum 17.7s
+epoch    30 | train_acc 0.1010 | best 0.1010 | 0.55s | cum 23.3s
+epoch    40 | train_acc 0.1117 | best 0.1117 | 0.62s | cum 29.0s
+epoch    50 | train_acc 0.1180 | best 0.1180 | val_acc 0.1040 | best_val 0.1040 | 0.77s | cum 34.8s
+epoch    60 | train_acc 0.1220 | best 0.1220 | 0.63s | cum 40.5s
+epoch    70 | train_acc 0.1262 | best 0.1278 | 0.54s | cum 46.2s
+epoch    80 | train_acc 0.1319 | best 0.1319 | 0.61s | cum 51.8s
+epoch    90 | train_acc 0.1363 | best 0.1363 | 0.55s | cum 57.3s
+epoch   100 | train_acc 0.1449 | best 0.1451 | val_acc 0.1297 | best_val 0.1297 | 0.81s | cum 63.2s
+epoch   110 | train_acc 0.1550 | best 0.1550 | 0.54s | cum 68.7s
+epoch   120 | train_acc 0.1692 | best 0.1692 | 0.61s | cum 74.4s
+epoch   130 | train_acc 0.1881 | best 0.1881 | 0.56s | cum 80.0s
+epoch   140 | train_acc 0.2042 | best 0.2042 | 0.61s | cum 85.7s
+epoch   150 | train_acc 0.2230 | best 0.2230 | val_acc 0.2517 | best_val 0.2517 | 0.76s | cum 91.6s
+epoch   160 | train_acc 0.2369 | best 0.2369 | 0.61s | cum 97.0s
+epoch   170 | train_acc 0.2521 | best 0.2521 | 0.54s | cum 102.6s
+epoch   180 | train_acc 0.2733 | best 0.2733 | 0.60s | cum 108.3s
+epoch   190 | train_acc 0.2900 | best 0.2900 | 0.53s | cum 113.8s
+epoch   200 | train_acc 0.3069 | best 0.3069 | val_acc 0.3342 | best_val 0.3342 | 0.81s | cum 119.6s
+epoch   210 | train_acc 0.3264 | best 0.3264 | 0.57s | cum 125.0s
+epoch   220 | train_acc 0.3482 | best 0.3482 | 0.60s | cum 130.6s
+epoch   230 | train_acc 0.3742 | best 0.3742 | 0.54s | cum 136.2s
+epoch   240 | train_acc 0.4062 | best 0.4062 | 0.62s | cum 141.8s
+epoch   250 | train_acc 0.4357 | best 0.4357 | val_acc 0.5399 | best_val 0.5399 | 0.75s | cum 147.6s
+epoch   260 | train_acc 0.4620 | best 0.4620 | 0.61s | cum 153.1s
+epoch   270 | train_acc 0.4875 | best 0.4875 | 0.55s | cum 158.8s
+epoch   280 | train_acc 0.5173 | best 0.5173 | 0.62s | cum 164.4s
+epoch   290 | train_acc 0.5424 | best 0.5440 | 0.55s | cum 170.1s
+epoch   300 | train_acc 0.5722 | best 0.5722 | val_acc 0.7538 | best_val 0.7538 | 0.83s | cum 176.1s
+epoch   310 | train_acc 0.5995 | best 0.5995 | 0.56s | cum 181.5s
+epoch   320 | train_acc 0.6188 | best 0.6190 | 0.61s | cum 187.3s
+epoch   330 | train_acc 0.6357 | best 0.6366 | 0.56s | cum 193.0s
+epoch   340 | train_acc 0.6540 | best 0.6540 | 0.62s | cum 198.7s
+epoch   350 | train_acc 0.6660 | best 0.6660 | val_acc 0.7950 | best_val 0.7950 | 0.75s | cum 204.5s
+epoch   360 | train_acc 0.6751 | best 0.6755 | 0.62s | cum 210.0s
+epoch   370 | train_acc 0.6883 | best 0.6883 | 0.55s | cum 215.6s
+epoch   380 | train_acc 0.6979 | best 0.6979 | 0.61s | cum 221.3s
+epoch   390 | train_acc 0.7041 | best 0.7041 | 0.55s | cum 226.9s
+epoch   400 | train_acc 0.7132 | best 0.7132 | val_acc 0.8207 | best_val 0.8207 | 0.82s | cum 232.8s
+epoch   410 | train_acc 0.7189 | best 0.7189 | 0.55s | cum 238.3s
+epoch   420 | train_acc 0.7242 | best 0.7242 | 0.61s | cum 243.9s
+epoch   430 | train_acc 0.7292 | best 0.7292 | 0.55s | cum 249.5s
+epoch   440 | train_acc 0.7330 | best 0.7362 | 0.61s | cum 255.2s
+epoch   450 | train_acc 0.7366 | best 0.7384 | val_acc 0.8411 | best_val 0.8411 | 0.75s | cum 261.0s
+epoch   460 | train_acc 0.7450 | best 0.7450 | 0.61s | cum 266.4s
+epoch   470 | train_acc 0.7459 | best 0.7482 | 0.54s | cum 272.0s
+epoch   480 | train_acc 0.7515 | best 0.7522 | 0.61s | cum 277.6s
+epoch   490 | train_acc 0.7523 | best 0.7558 | 0.57s | cum 283.2s
+epoch   500 | train_acc 0.7590 | best 0.7593 | val_acc 0.8494 | best_val 0.8494 | 0.88s | cum 289.2s
+epoch   510 | train_acc 0.7624 | best 0.7624 | 0.54s | cum 294.7s
+epoch   520 | train_acc 0.7684 | best 0.7684 | 0.60s | cum 300.3s
+epoch   530 | train_acc 0.7705 | best 0.7709 | 0.54s | cum 305.8s
+epoch   540 | train_acc 0.7738 | best 0.7746 | 0.61s | cum 311.5s
+epoch   550 | train_acc 0.7776 | best 0.7776 | val_acc 0.8661 | best_val 0.8661 | 0.75s | cum 317.3s
+epoch   560 | train_acc 0.7783 | best 0.7800 | 0.61s | cum 322.7s
+epoch   570 | train_acc 0.7813 | best 0.7824 | 0.54s | cum 328.2s
+epoch   580 | train_acc 0.7850 | best 0.7855 | 0.61s | cum 333.8s
+epoch   590 | train_acc 0.7887 | best 0.7889 | 0.55s | cum 339.6s
+epoch   600 | train_acc 0.7898 | best 0.7909 | val_acc 0.8686 | best_val 0.8686 | 0.81s | cum 345.4s
+epoch   610 | train_acc 0.7930 | best 0.7930 | 0.54s | cum 350.8s
+epoch   620 | train_acc 0.7923 | best 0.7945 | 0.62s | cum 356.5s
+epoch   630 | train_acc 0.7949 | best 0.7968 | 0.54s | cum 362.1s
+epoch   640 | train_acc 0.7965 | best 0.7971 | 0.61s | cum 367.7s
+epoch   650 | train_acc 0.7983 | best 0.7991 | val_acc 0.8743 | best_val 0.8743 | 0.75s | cum 373.5s
+epoch   660 | train_acc 0.8001 | best 0.8011 | 0.60s | cum 378.9s
+epoch   670 | train_acc 0.7993 | best 0.8020 | 0.58s | cum 384.5s
+epoch   680 | train_acc 0.8013 | best 0.8028 | 0.60s | cum 390.2s
+epoch   690 | train_acc 0.8044 | best 0.8044 | 0.54s | cum 395.7s
+epoch   700 | train_acc 0.8059 | best 0.8059 | val_acc 0.8749 | best_val 0.8749 | 0.81s | cum 401.5s
+epoch   710 | train_acc 0.8058 | best 0.8095 | 0.54s | cum 406.9s
+epoch   720 | train_acc 0.8088 | best 0.8111 | 0.61s | cum 412.5s
+epoch   730 | train_acc 0.8112 | best 0.8112 | 0.54s | cum 418.0s
+epoch   740 | train_acc 0.8110 | best 0.8121 | 0.61s | cum 423.6s
+epoch   750 | train_acc 0.8125 | best 0.8141 | val_acc 0.8803 | best_val 0.8803 | 0.75s | cum 429.4s
+epoch   760 | train_acc 0.8115 | best 0.8147 | 0.60s | cum 434.8s
+epoch   770 | train_acc 0.8151 | best 0.8158 | 0.54s | cum 440.3s
+epoch   780 | train_acc 0.8165 | best 0.8185 | 0.61s | cum 445.9s
+epoch   790 | train_acc 0.8185 | best 0.8205 | 0.54s | cum 451.4s
+epoch   800 | train_acc 0.8189 | best 0.8205 | val_acc 0.8856 | best_val 0.8856 | 0.81s | cum 457.2s
+epoch   810 | train_acc 0.8218 | best 0.8220 | 0.54s | cum 462.6s
+epoch   820 | train_acc 0.8205 | best 0.8220 | 0.61s | cum 468.2s
+epoch   830 | train_acc 0.8208 | best 0.8228 | 0.54s | cum 473.8s
+epoch   840 | train_acc 0.8225 | best 0.8237 | 0.61s | cum 479.4s
+epoch   850 | train_acc 0.8232 | best 0.8245 | val_acc 0.8857 | best_val 0.8857 | 0.75s | cum 485.1s
+epoch   860 | train_acc 0.8243 | best 0.8255 | 0.60s | cum 490.5s
+epoch   870 | train_acc 0.8262 | best 0.8271 | 0.54s | cum 496.1s
+epoch   880 | train_acc 0.8270 | best 0.8292 | 0.61s | cum 501.7s
+epoch   890 | train_acc 0.8265 | best 0.8292 | 0.54s | cum 507.2s
+epoch   900 | train_acc 0.8289 | best 0.8309 | val_acc 0.8845 | best_val 0.8857 | 0.81s | cum 513.0s
+epoch   910 | train_acc 0.8297 | best 0.8309 | 0.54s | cum 518.3s
+epoch   920 | train_acc 0.8300 | best 0.8332 | 0.61s | cum 524.0s
+epoch   930 | train_acc 0.8321 | best 0.8347 | 0.54s | cum 529.5s
+epoch   940 | train_acc 0.8332 | best 0.8347 | 0.60s | cum 535.1s
+epoch   950 | train_acc 0.8330 | best 0.8354 | val_acc 0.8864 | best_val 0.8864 | 0.74s | cum 540.8s
+epoch   960 | train_acc 0.8326 | best 0.8354 | 0.60s | cum 546.2s
+epoch   970 | train_acc 0.8343 | best 0.8354 | 0.54s | cum 551.8s
+epoch   980 | train_acc 0.8361 | best 0.8373 | 0.62s | cum 557.9s
+epoch   990 | train_acc 0.8368 | best 0.8373 | 0.54s | cum 563.4s
+epoch  1000 | train_acc 0.8383 | best 0.8389 | val_acc 0.8893 | best_val 0.8893 | 0.82s | cum 569.2s
+epoch  1010 | train_acc 0.8391 | best 0.8391 | 0.54s | cum 574.6s
+epoch  1020 | train_acc 0.8384 | best 0.8391 | 0.60s | cum 580.2s
+epoch  1030 | train_acc 0.8392 | best 0.8394 | 0.54s | cum 585.7s
+epoch  1040 | train_acc 0.8386 | best 0.8413 | 0.60s | cum 591.3s
+epoch  1050 | train_acc 0.8391 | best 0.8413 | val_acc 0.8933 | best_val 0.8933 | 0.75s | cum 597.0s
+epoch  1060 | train_acc 0.8415 | best 0.8420 | 0.61s | cum 602.4s
+epoch  1070 | train_acc 0.8397 | best 0.8427 | 0.54s | cum 608.0s
+epoch  1080 | train_acc 0.8431 | best 0.8439 | 0.61s | cum 613.6s
+epoch  1090 | train_acc 0.8438 | best 0.8447 | 0.54s | cum 619.2s
+epoch  1100 | train_acc 0.8438 | best 0.8453 | val_acc 0.8913 | best_val 0.8933 | 0.82s | cum 625.0s
+epoch  1110 | train_acc 0.8440 | best 0.8459 | 0.54s | cum 630.3s
+epoch  1120 | train_acc 0.8452 | best 0.8469 | 0.61s | cum 635.9s
+epoch  1130 | train_acc 0.8458 | best 0.8469 | 0.54s | cum 641.5s
+epoch  1140 | train_acc 0.8470 | best 0.8492 | 0.61s | cum 647.1s
+epoch  1150 | train_acc 0.8485 | best 0.8492 | val_acc 0.8945 | best_val 0.8945 | 0.75s | cum 652.8s
+epoch  1160 | train_acc 0.8462 | best 0.8495 | 0.61s | cum 658.2s
+epoch  1170 | train_acc 0.8490 | best 0.8495 | 0.54s | cum 663.7s
+epoch  1180 | train_acc 0.8474 | best 0.8498 | 0.64s | cum 669.4s
+epoch  1190 | train_acc 0.8498 | best 0.8498 | 0.54s | cum 674.9s
+epoch  1200 | train_acc 0.8492 | best 0.8501 | val_acc 0.8956 | best_val 0.8956 | 0.81s | cum 680.7s
+epoch  1210 | train_acc 0.8504 | best 0.8504 | 0.54s | cum 686.0s
+epoch  1220 | train_acc 0.8491 | best 0.8505 | 0.61s | cum 691.6s
+epoch  1230 | train_acc 0.8489 | best 0.8516 | 0.54s | cum 697.2s
+epoch  1240 | train_acc 0.8511 | best 0.8516 | 0.60s | cum 702.8s
+epoch  1250 | train_acc 0.8509 | best 0.8525 | val_acc 0.8947 | best_val 0.8956 | 0.75s | cum 708.6s
+epoch  1260 | train_acc 0.8502 | best 0.8525 | 0.61s | cum 714.0s
+epoch  1270 | train_acc 0.8508 | best 0.8528 | 0.54s | cum 719.5s
+epoch  1280 | train_acc 0.8519 | best 0.8538 | 0.61s | cum 725.1s
+epoch  1290 | train_acc 0.8514 | best 0.8538 | 0.54s | cum 730.7s
+epoch  1300 | train_acc 0.8516 | best 0.8538 | val_acc 0.8973 | best_val 0.8973 | 0.81s | cum 736.4s
+epoch  1310 | train_acc 0.8531 | best 0.8538 | 0.54s | cum 741.8s
+epoch  1320 | train_acc 0.8523 | best 0.8538 | 0.60s | cum 747.4s
+epoch  1330 | train_acc 0.8536 | best 0.8562 | 0.54s | cum 752.9s
+epoch  1340 | train_acc 0.8557 | best 0.8562 | 0.61s | cum 758.5s
+epoch  1350 | train_acc 0.8536 | best 0.8564 | val_acc 0.8957 | best_val 0.8973 | 0.75s | cum 764.3s
+epoch  1360 | train_acc 0.8553 | best 0.8564 | 0.61s | cum 769.7s
+epoch  1370 | train_acc 0.8550 | best 0.8570 | 0.54s | cum 775.2s
+epoch  1380 | train_acc 0.8536 | best 0.8570 | 0.61s | cum 780.8s
+epoch  1390 | train_acc 0.8553 | best 0.8570 | 0.54s | cum 786.3s
+epoch  1400 | train_acc 0.8561 | best 0.8591 | val_acc 0.9000 | best_val 0.9000 | 0.81s | cum 792.2s
+epoch  1410 | train_acc 0.8569 | best 0.8591 | 0.54s | cum 797.5s
+epoch  1420 | train_acc 0.8581 | best 0.8591 | 0.61s | cum 803.1s
+epoch  1430 | train_acc 0.8591 | best 0.8595 | 0.54s | cum 808.6s
+epoch  1440 | train_acc 0.8597 | best 0.8607 | 0.61s | cum 814.2s
+epoch  1450 | train_acc 0.8599 | best 0.8607 | val_acc 0.9011 | best_val 0.9011 | 0.76s | cum 820.0s
+epoch  1460 | train_acc 0.8600 | best 0.8607 | 0.61s | cum 825.4s
+epoch  1470 | train_acc 0.8595 | best 0.8610 | 0.54s | cum 830.9s
+epoch  1480 | train_acc 0.8602 | best 0.8610 | 0.60s | cum 836.5s
+epoch  1490 | train_acc 0.8615 | best 0.8620 | 0.54s | cum 842.0s
+epoch  1500 | train_acc 0.8608 | best 0.8620 | val_acc 0.9008 | best_val 0.9011 | 0.81s | cum 847.9s
+epoch  1510 | train_acc 0.8600 | best 0.8626 | 0.54s | cum 853.3s
+epoch  1520 | train_acc 0.8607 | best 0.8626 | 0.61s | cum 858.8s
+epoch  1530 | train_acc 0.8627 | best 0.8633 | 0.54s | cum 864.4s
+epoch  1540 | train_acc 0.8604 | best 0.8644 | 0.60s | cum 870.0s
+epoch  1550 | train_acc 0.8635 | best 0.8645 | val_acc 0.9000 | best_val 0.9011 | 0.75s | cum 875.7s
+epoch  1560 | train_acc 0.8632 | best 0.8657 | 0.66s | cum 881.2s
+epoch  1570 | train_acc 0.8640 | best 0.8657 | 0.56s | cum 886.8s
+epoch  1580 | train_acc 0.8629 | best 0.8657 | 0.60s | cum 892.6s
+epoch  1590 | train_acc 0.8660 | best 0.8660 | 0.54s | cum 898.1s
+epoch  1600 | train_acc 0.8668 | best 0.8668 | val_acc 0.9027 | best_val 0.9027 | 0.82s | cum 904.0s
+epoch  1610 | train_acc 0.8655 | best 0.8673 | 0.54s | cum 909.3s
+epoch  1620 | train_acc 0.8647 | best 0.8673 | 0.61s | cum 914.9s
+epoch  1630 | train_acc 0.8654 | best 0.8678 | 0.54s | cum 920.4s
+epoch  1640 | train_acc 0.8643 | best 0.8678 | 0.60s | cum 926.0s
+epoch  1650 | train_acc 0.8653 | best 0.8689 | val_acc 0.9024 | best_val 0.9027 | 0.75s | cum 931.8s
+epoch  1660 | train_acc 0.8664 | best 0.8689 | 0.61s | cum 937.2s
+epoch  1670 | train_acc 0.8674 | best 0.8689 | 0.58s | cum 942.8s
+epoch  1680 | train_acc 0.8664 | best 0.8689 | 0.61s | cum 948.4s
+epoch  1690 | train_acc 0.8687 | best 0.8689 | 0.54s | cum 953.9s
+epoch  1700 | train_acc 0.8663 | best 0.8693 | val_acc 0.9034 | best_val 0.9034 | 0.81s | cum 959.7s
+epoch  1710 | train_acc 0.8653 | best 0.8694 | 0.54s | cum 965.1s
+epoch  1720 | train_acc 0.8661 | best 0.8694 | 0.60s | cum 970.7s
+epoch  1730 | train_acc 0.8677 | best 0.8696 | 0.54s | cum 976.3s
+epoch  1740 | train_acc 0.8681 | best 0.8696 | 0.61s | cum 981.8s
+epoch  1750 | train_acc 0.8691 | best 0.8710 | val_acc 0.9059 | best_val 0.9059 | 0.75s | cum 987.6s
+epoch  1760 | train_acc 0.8697 | best 0.8710 | 0.61s | cum 993.0s
+epoch  1770 | train_acc 0.8677 | best 0.8710 | 0.54s | cum 998.5s
+epoch  1780 | train_acc 0.8671 | best 0.8710 | 0.61s | cum 1004.2s
+epoch  1790 | train_acc 0.8668 | best 0.8710 | 0.54s | cum 1009.7s
+epoch  1800 | train_acc 0.8697 | best 0.8714 | val_acc 0.9041 | best_val 0.9059 | 0.81s | cum 1015.5s
+epoch  1810 | train_acc 0.8693 | best 0.8723 | 0.54s | cum 1020.8s
+epoch  1820 | train_acc 0.8707 | best 0.8723 | 0.60s | cum 1026.4s
+epoch  1830 | train_acc 0.8677 | best 0.8723 | 0.55s | cum 1032.0s
+epoch  1840 | train_acc 0.8710 | best 0.8723 | 0.61s | cum 1037.6s
+epoch  1850 | train_acc 0.8710 | best 0.8733 | val_acc 0.9060 | best_val 0.9060 | 0.75s | cum 1043.3s
+epoch  1860 | train_acc 0.8721 | best 0.8735 | 0.60s | cum 1048.8s
+epoch  1870 | train_acc 0.8722 | best 0.8735 | 0.54s | cum 1054.3s
+epoch  1880 | train_acc 0.8712 | best 0.8735 | 0.61s | cum 1059.9s
+epoch  1890 | train_acc 0.8707 | best 0.8743 | 0.55s | cum 1065.5s
+epoch  1900 | train_acc 0.8740 | best 0.8743 | val_acc 0.9063 | best_val 0.9063 | 0.81s | cum 1071.3s
+epoch  1910 | train_acc 0.8721 | best 0.8743 | 0.54s | cum 1076.6s
+epoch  1920 | train_acc 0.8731 | best 0.8755 | 0.61s | cum 1082.2s
+epoch  1930 | train_acc 0.8726 | best 0.8755 | 0.54s | cum 1087.7s
+epoch  1940 | train_acc 0.8736 | best 0.8755 | 0.61s | cum 1093.4s
+epoch  1950 | train_acc 0.8733 | best 0.8755 | val_acc 0.9086 | best_val 0.9086 | 0.75s | cum 1099.1s
+epoch  1960 | train_acc 0.8741 | best 0.8755 | 0.61s | cum 1104.5s
+epoch  1970 | train_acc 0.8750 | best 0.8766 | 0.54s | cum 1110.0s
+epoch  1980 | train_acc 0.8753 | best 0.8766 | 0.61s | cum 1115.6s
+epoch  1990 | train_acc 0.8754 | best 0.8770 | 0.54s | cum 1121.2s
+epoch  2000 | train_acc 0.8767 | best 0.8777 | val_acc 0.9103 | best_val 0.9103 | 0.81s | cum 1127.0s
+epoch  2010 | train_acc 0.8771 | best 0.8786 | 0.54s | cum 1132.4s
+epoch  2020 | train_acc 0.8761 | best 0.8786 | 0.60s | cum 1138.0s
+epoch  2030 | train_acc 0.8775 | best 0.8787 | 0.54s | cum 1143.5s
+epoch  2040 | train_acc 0.8771 | best 0.8787 | 0.61s | cum 1149.1s
+epoch  2050 | train_acc 0.8777 | best 0.8789 | val_acc 0.9094 | best_val 0.9103 | 0.74s | cum 1154.8s
+epoch  2060 | train_acc 0.8788 | best 0.8791 | 0.61s | cum 1160.2s
+epoch  2070 | train_acc 0.8766 | best 0.8791 | 0.54s | cum 1165.7s
+epoch  2080 | train_acc 0.8780 | best 0.8795 | 0.61s | cum 1171.3s
+epoch  2090 | train_acc 0.8778 | best 0.8795 | 0.54s | cum 1176.9s
+epoch  2100 | train_acc 0.8773 | best 0.8795 | val_acc 0.9096 | best_val 0.9103 | 0.82s | cum 1182.7s
+epoch  2110 | train_acc 0.8779 | best 0.8795 | 0.54s | cum 1188.0s
+epoch  2120 | train_acc 0.8776 | best 0.8797 | 0.60s | cum 1193.6s
+epoch  2130 | train_acc 0.8784 | best 0.8797 | 0.54s | cum 1199.2s
+epoch  2140 | train_acc 0.8773 | best 0.8798 | 0.60s | cum 1204.8s
+epoch  2150 | train_acc 0.8781 | best 0.8800 | val_acc 0.9102 | best_val 0.9103 | 0.75s | cum 1210.5s
+epoch  2160 | train_acc 0.8783 | best 0.8807 | 0.61s | cum 1215.9s
+epoch  2170 | train_acc 0.8789 | best 0.8807 | 0.54s | cum 1221.5s
+epoch  2180 | train_acc 0.8816 | best 0.8818 | 0.61s | cum 1227.1s
+epoch  2190 | train_acc 0.8797 | best 0.8818 | 0.54s | cum 1232.6s
+epoch  2200 | train_acc 0.8800 | best 0.8818 | val_acc 0.9112 | best_val 0.9112 | 0.81s | cum 1238.4s
+epoch  2210 | train_acc 0.8801 | best 0.8820 | 0.57s | cum 1243.8s
+epoch  2220 | train_acc 0.8817 | best 0.8830 | 0.60s | cum 1249.4s
+epoch  2230 | train_acc 0.8820 | best 0.8830 | 0.54s | cum 1254.9s
+epoch  2240 | train_acc 0.8799 | best 0.8830 | 0.60s | cum 1260.5s
+epoch  2250 | train_acc 0.8798 | best 0.8830 | val_acc 0.9109 | best_val 0.9112 | 0.75s | cum 1266.3s
+epoch  2260 | train_acc 0.8805 | best 0.8830 | 0.61s | cum 1271.7s
+epoch  2270 | train_acc 0.8810 | best 0.8830 | 0.54s | cum 1277.3s
+epoch  2280 | train_acc 0.8807 | best 0.8830 | 0.61s | cum 1282.9s
+epoch  2290 | train_acc 0.8818 | best 0.8830 | 0.54s | cum 1288.4s
+epoch  2300 | train_acc 0.8809 | best 0.8830 | val_acc 0.9091 | best_val 0.9112 | 0.81s | cum 1294.2s
+epoch  2310 | train_acc 0.8800 | best 0.8830 | 0.54s | cum 1299.5s
+epoch  2320 | train_acc 0.8822 | best 0.8830 | 0.60s | cum 1305.2s
+epoch  2330 | train_acc 0.8818 | best 0.8830 | 0.54s | cum 1310.7s
+epoch  2340 | train_acc 0.8792 | best 0.8830 | 0.61s | cum 1316.3s
+epoch  2350 | train_acc 0.8807 | best 0.8830 | val_acc 0.9115 | best_val 0.9115 | 0.75s | cum 1322.0s
+epoch  2360 | train_acc 0.8824 | best 0.8833 | 0.61s | cum 1327.4s
+epoch  2370 | train_acc 0.8817 | best 0.8837 | 0.54s | cum 1333.0s
+epoch  2380 | train_acc 0.8822 | best 0.8837 | 0.60s | cum 1338.6s
+epoch  2390 | train_acc 0.8832 | best 0.8838 | 0.54s | cum 1344.2s
+epoch  2400 | train_acc 0.8821 | best 0.8838 | val_acc 0.9115 | best_val 0.9115 | 0.81s | cum 1350.0s
+epoch  2410 | train_acc 0.8824 | best 0.8838 | 0.54s | cum 1355.3s
+epoch  2420 | train_acc 0.8809 | best 0.8838 | 0.61s | cum 1360.9s
+epoch  2430 | train_acc 0.8828 | best 0.8838 | 0.55s | cum 1366.5s
+epoch  2440 | train_acc 0.8831 | best 0.8838 | 0.61s | cum 1372.1s
+epoch  2450 | train_acc 0.8820 | best 0.8838 | val_acc 0.9126 | best_val 0.9126 | 0.75s | cum 1377.8s
+epoch  2460 | train_acc 0.8816 | best 0.8838 | 0.61s | cum 1383.2s
+epoch  2470 | train_acc 0.8827 | best 0.8838 | 0.54s | cum 1388.8s
+epoch  2480 | train_acc 0.8849 | best 0.8849 | 0.60s | cum 1394.4s
+epoch  2490 | train_acc 0.8847 | best 0.8849 | 0.54s | cum 1400.0s
+epoch  2500 | train_acc 0.8829 | best 0.8854 | val_acc 0.9117 | best_val 0.9126 | 0.80s | cum 1405.8s
+epoch  2510 | train_acc 0.8851 | best 0.8854 | 0.54s | cum 1411.1s
+epoch  2520 | train_acc 0.8813 | best 0.8854 | 0.61s | cum 1416.7s
+epoch  2530 | train_acc 0.8832 | best 0.8856 | 0.54s | cum 1422.2s
+epoch  2540 | train_acc 0.8841 | best 0.8856 | 0.61s | cum 1427.9s
+epoch  2550 | train_acc 0.8829 | best 0.8858 | val_acc 0.9132 | best_val 0.9132 | 0.75s | cum 1433.6s
+epoch  2560 | train_acc 0.8845 | best 0.8858 | 0.60s | cum 1439.0s
+epoch  2570 | train_acc 0.8830 | best 0.8862 | 0.54s | cum 1444.6s
+epoch  2580 | train_acc 0.8866 | best 0.8866 | 0.60s | cum 1450.2s
+epoch  2590 | train_acc 0.8864 | best 0.8867 | 0.55s | cum 1455.7s
+epoch  2600 | train_acc 0.8858 | best 0.8867 | val_acc 0.9113 | best_val 0.9132 | 0.81s | cum 1461.6s
+epoch  2610 | train_acc 0.8865 | best 0.8870 | 0.54s | cum 1466.9s
+epoch  2620 | train_acc 0.8868 | best 0.8870 | 0.60s | cum 1472.5s
+epoch  2630 | train_acc 0.8844 | best 0.8870 | 0.54s | cum 1478.0s
+epoch  2640 | train_acc 0.8842 | best 0.8870 | 0.62s | cum 1483.6s
+epoch  2650 | train_acc 0.8851 | best 0.8870 | val_acc 0.9138 | best_val 0.9138 | 0.76s | cum 1489.4s
+epoch  2660 | train_acc 0.8857 | best 0.8870 | 0.60s | cum 1494.9s
+epoch  2670 | train_acc 0.8866 | best 0.8870 | 0.54s | cum 1500.4s
+epoch  2680 | train_acc 0.8849 | best 0.8870 | 0.60s | cum 1506.0s
+epoch  2690 | train_acc 0.8845 | best 0.8870 | 0.53s | cum 1511.5s
+epoch  2700 | train_acc 0.8850 | best 0.8874 | val_acc 0.9133 | best_val 0.9138 | 0.86s | cum 1517.4s
+epoch  2710 | train_acc 0.8847 | best 0.8875 | 0.54s | cum 1522.7s
+epoch  2720 | train_acc 0.8846 | best 0.8875 | 0.60s | cum 1528.3s
+epoch  2730 | train_acc 0.8834 | best 0.8876 | 0.54s | cum 1533.8s
+epoch  2740 | train_acc 0.8841 | best 0.8876 | 0.61s | cum 1539.4s
+epoch  2750 | train_acc 0.8853 | best 0.8876 | val_acc 0.9102 | best_val 0.9138 | 0.75s | cum 1545.2s
+epoch  2760 | train_acc 0.8867 | best 0.8876 | 0.60s | cum 1550.6s
+epoch  2770 | train_acc 0.8849 | best 0.8876 | 0.54s | cum 1556.2s
+epoch  2780 | train_acc 0.8861 | best 0.8878 | 0.61s | cum 1561.8s
+epoch  2790 | train_acc 0.8867 | best 0.8878 | 0.54s | cum 1567.3s
+epoch  2800 | train_acc 0.8860 | best 0.8878 | val_acc 0.9120 | best_val 0.9138 | 0.81s | cum 1573.1s
+epoch  2810 | train_acc 0.8857 | best 0.8878 | 0.54s | cum 1578.5s
+epoch  2820 | train_acc 0.8863 | best 0.8878 | 0.61s | cum 1584.0s
+epoch  2830 | train_acc 0.8872 | best 0.8878 | 0.54s | cum 1589.6s
+epoch  2840 | train_acc 0.8859 | best 0.8880 | 0.61s | cum 1595.2s
+epoch  2850 | train_acc 0.8861 | best 0.8887 | val_acc 0.9124 | best_val 0.9138 | 0.75s | cum 1600.9s
+epoch  2860 | train_acc 0.8857 | best 0.8887 | 0.60s | cum 1606.3s
+epoch  2870 | train_acc 0.8864 | best 0.8887 | 0.54s | cum 1611.9s
+epoch  2880 | train_acc 0.8884 | best 0.8887 | 0.61s | cum 1617.5s
+epoch  2890 | train_acc 0.8891 | best 0.8891 | 0.54s | cum 1623.1s
+epoch  2900 | train_acc 0.8881 | best 0.8900 | val_acc 0.9151 | best_val 0.9151 | 0.82s | cum 1628.9s
+epoch  2910 | train_acc 0.8877 | best 0.8900 | 0.54s | cum 1634.2s
+epoch  2920 | train_acc 0.8884 | best 0.8900 | 0.60s | cum 1639.9s
+epoch  2930 | train_acc 0.8880 | best 0.8900 | 0.54s | cum 1645.4s
+epoch  2940 | train_acc 0.8889 | best 0.8904 | 0.61s | cum 1651.0s
+epoch  2950 | train_acc 0.8886 | best 0.8914 | val_acc 0.9152 | best_val 0.9152 | 0.75s | cum 1656.7s
+epoch  2960 | train_acc 0.8894 | best 0.8914 | 0.60s | cum 1662.1s
+epoch  2970 | train_acc 0.8880 | best 0.8914 | 0.59s | cum 1667.7s
+epoch  2980 | train_acc 0.8887 | best 0.8914 | 0.61s | cum 1673.3s
+epoch  2990 | train_acc 0.8895 | best 0.8914 | 0.54s | cum 1678.9s
+epoch  2999 | train_acc 0.8897 | best 0.8914 | 0.54s | cum 1683.9s
+best_val = 0.9152 | best_train = 0.8914
+Done.
