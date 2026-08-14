@@ -1,0 +1,12 @@
+[package]
+name = "hyperscalees"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+burn.workspace = true
+hyperscalees-core.workspace = true
+hyperscalees-noiser = { path = "../hyperscalees-noiser" }
+hyperscalees-models = { path = "../hyperscalees-models" }
+hyperscalees-envs = { path = "../hyperscalees-envs" }

@@ -1,0 +1,10 @@
+﻿cargo : [1m[92m    Checking[0m hyperscalees-models v0.1.0 (E:\pythonProject\HyperscaleES\burn_impl\hyperscalees-mode
+ls)
+At line:15 char:5569
++ ... burn_impl"; cargo check -p hyperscalees-models --message-format=short ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([1m[92m    Ch...scalees-models):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+hyperscalees-models\src\snn.rs:222:32: [1m[91merror[E0308][0m: mismatched types: expected `2`, found `3`
+[1m[91merror[0m: could not compile `hyperscalees-models` (lib) due to 1 previous error

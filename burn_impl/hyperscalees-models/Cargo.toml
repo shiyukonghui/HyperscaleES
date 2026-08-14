@@ -1,0 +1,9 @@
+[package]
+name = "hyperscalees-models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+burn.workspace = true
+hyperscalees-core = { path = "../hyperscalees-core" }

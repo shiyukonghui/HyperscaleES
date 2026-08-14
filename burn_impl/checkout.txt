@@ -1,0 +1,10 @@
+﻿cargo : [1m[92m    Checking[0m hyperscalees-models v0.1.0 (E:\pythonProject\HyperscaleES\burn_impl\hyperscalees-mode
+ls)
+At line:15 char:5569
++ ... burn_impl"; cargo check -p hyperscalees-models > checkout.txt 2>&1; S ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([1m[92m    Ch...scalees-models):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[1m[92m    Finished[0m ]8;;https://doc.rust-lang.org/cargo/reference/profiles.html#default-profiles\`dev` profile 
+[unoptimized + debuginfo]]8;;\ target(s) in 1.11s

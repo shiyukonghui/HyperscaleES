@@ -1,0 +1,11 @@
+[package]
+name = "hyperscalees-envs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+burn.workspace = true
+hyperscalees-core.workspace = true
+flate2 = "1"
+regex = "1"

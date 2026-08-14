@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "hyperscalees-core",
+    "hyperscalees-noiser",
+    "hyperscalees-models",
+    "hyperscalees-envs",
+    "hyperscalees",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Burn 0.21 uses burn-flex as the CPU backend (successor to burn-ndarray).
+# flex supports f32/i32 element types, which matches the f32 JAX reference.
+burn = { version = "0.21", default-features = false, features = ["flex"] }
+burn-flex = { version = "0.21", default-features = false }
+hyperscalees-core = { path = "hyperscalees-core" }

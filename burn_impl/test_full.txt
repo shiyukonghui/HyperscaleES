@@ -1,0 +1,63 @@
+﻿cargo : [1m[92m    Finished[0m ]8;;https://doc.rust-lang.org/cargo/reference/profiles.html#default-profiles\`test`
+ profile [unoptimized + debuginfo]]8;;\ target(s) in 0.72s
+At line:15 char:5574
++ ... aleES\burn_impl"; $o = cargo test -p hyperscalees-models 2>&1 | Out-S ...
++                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([1m[92m    Fi...get(s) in 0.72s:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[1m[92m     Running[0m unittests src\lib.rs (target\debug\deps\hyperscalees_models-637558ff44263733.exe)
+
+running 24 tests
+test common::tests::embedding_selects_rows ... ok
+test common::tests::linear_with_bias ... ok
+test common::tests::mlp_multi_dim_hand_computed ... ok
+test common::tests::es_classes_map_to_constants ... ok
+test common::tests::mlp_relu_applies_only_between_layers ... ok
+test common::tests::linear_without_bias ... ok
+test common::tests::recursive_scan_split_count_shape_parity ... ok
+test common::tests::mlp_last_layer_not_activated ... ok
+test common::tests::relu_clamps_negatives ... ok
+test common::tests::mm_forward_matches_expected ... ok
+test common::tests::silu_matches_x_sigmoid ... ok
+test snn::tests::lif_step_accumulates_then_fires ... ok
+test common::tests::simple_es_tree_key_count_matches_leaves ... ok
+test common::tests::layer_norm_zero_mean_unit_std ... ok
+test common::tests::pqn_applies_relu_after_layer_norm ... ok
+test snn::tests::lif_step_suprathreshold_current_fires ... ok
+test snn::tests::run_lif_silent_with_negative_current ... ok
+test snn::tests::lif_step_subthreshold_current_never_fires ... ok
+test snn::tests::run_lif_shape_and_firing ... FAILED
+test common::tests::mm_rand_init_scale_variance ... ok
+test snn::tests::snn_rand_init_struct_and_es_map ... ok
+test snn::tests::snn_forward_reproducible_across_calls ... FAILED
+test snn::tests::snn_forward_clean_deterministic_and_shaped ... ok
+test snn::tests::snn_forward_noised_differs_from_clean ... ok
+
+failures:
+
+---- snn::tests::run_lif_shape_and_firing stdout ----
+
+thread 'snn::tests::run_lif_shape_and_firing' (10728) panicked at hyperscalees-models\src\snn.rs:299:9:
+assertion `left == right` failed
+  left: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+ right: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- snn::tests::snn_forward_reproducible_across_calls stdout ----
+
+thread 'snn::tests::snn_forward_reproducible_across_calls' (30364) panicked at C:\Users\wyl\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\burn-tensor-0.21.0\src\tensor\api\base.rs:762:9:
+=== Tensor Operation Error ===
+  Operation: 'Squeeze'
+  Reason:
+    1. Resulting dimensions 1 do not match the required D2 size 2. 
+
+
+
+failures:
+    snn::tests::run_lif_shape_and_firing
+    snn::tests::snn_forward_reproducible_across_calls
+
+test result: FAILED. 22 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+[1m[91merror[0m: test failed, to rerun pass `-p hyperscalees-models --lib`

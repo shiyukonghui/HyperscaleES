@@ -11,3 +11,4 @@ logs/
 *.pdf
 .pylibs/
 data
+**/target/

@@ -1,0 +1,36 @@
+﻿cargo : [1m[92m   Compiling[0m hyperscalees-models v0.1.0 (E:\pythonProject\HyperscaleES\burn_impl\hyperscalees-mode
+ls)
+At line:15 char:5569
++ ... burn_impl"; cargo test -p hyperscalees-models > testout.txt 2>&1; Sel ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([1m[92m   Com...scalees-models):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[1m[91merror[E0382][0m[1m[97m: use of moved value: `out1`[0m
+   [1m[96m--> [0mhyperscalees-models\src\snn.rs:337:24
+    [1m[96m|[0m
+[1m[96m331[0m [1m[96m|[0m         let out1 = model.forward(x.clone(), None);
+    [1m[96m|[0m             [1m[96m----[0m [1m[96mmove occurs because `out1` has type `burn::Tensor<Flex, 2>`, 
+which does not implement the `Copy` trait[0m
+[1m[96m...[0m
+[1m[96m335[0m [1m[96m|[0m         assert_eq!(to_vec(out1), to_vec(out2));
+    [1m[96m|[0m                           [1m[96m----[0m [1m[96mvalue moved here[0m
+[1m[96m336[0m [1m[96m|[0m         // Clean forward is finite (no overflow from the LIF reset).
+[1m[96m337[0m [1m[96m|[0m         assert!(to_vec(out1).iter().all(|v| v.is_finite()));
+    [1m[96m|[0m                        [1m[91m^^^^[0m [1m[91mvalue used here after move[0m
+    [1m[96m|[0m
+[1m[92mnote[0m: consider changing this parameter type in function `to_vec` to borrow instead if owning the value isn
+'t necessary
+   [1m[96m--> [0mhyperscalees-models\src\snn.rs:237:34
+    [1m[96m|[0m
+[1m[96m237[0m [1m[96m|[0m     fn to_vec<const D: usize>(t: Tensor<B, D>) -> Vec<f32> {
+    [1m[96m|[0m        [1m[96m------[0m [1m[96min this function[0m   [1m[92m^^^^^^^^^^^^[0m [1m[92mthis p
+arameter takes ownership of the value[0m
+[1m[96mhelp[0m: consider cloning the value if the performance cost is acceptable
+    [1m[96m|[0m
+[1m[96m335[0m [1m[96m| [0m        assert_eq!(to_vec(out1[92m.clone()[0m), to_vec(out2));
+    [1m[96m|[0m                               [92m++++++++[0m
+
+[1m[97mFor more information about this error, try `rustc --explain E0382`.[0m
+[1m[91merror[0m: could not compile `hyperscalees-models` (lib test) due to 1 previous error
+[1m[93mwarning[0m: build failed, waiting for other jobs to finish...
