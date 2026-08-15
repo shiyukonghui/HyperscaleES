@@ -772,9 +772,15 @@ fn main() {
             let hi = lo + chunk;
             let imgs_k = imgs.clone().slice([lo..hi, 0..IN_DIM]); // (chunk, in)
             let labels_k = labels.clone().slice([lo..hi]); // (chunk,)
-            // 每段独立泊松编码：(T, chunk, in)。
+            // 每段独立泊松编码：(T, chunk, in)。默认 cuda-oxide 融合内核
+            //（阶段 C-4：现场 RNG + 比较单次启动，[0p] 统计校验 + [4P] 计时）；
+            // POISSON=burn 切回 burn random+lower。
             let t0 = std::time::Instant::now();
-            let spikes_k = poisson_encode(imgs_k, cfg.t);
+            let spikes_k = match std::env::var("POISSON").as_deref() {
+                Ok("burn") => poisson_encode(imgs_k, cfg.t),
+                _ => hyperscalees::oxide::poisson_encode_fused(&imgs_k, cfg.t, &device)
+                    .expect("cuda-oxide 泊松编码失败"),
+            };
             sync_now();
             pt.poisson += t0.elapsed().as_secs_f32();
             // 该 chunk 每层（fc1/fc2/fc3 = dim_keys 前 3 项）的 GPU 噪声（前向与梯度共享）。

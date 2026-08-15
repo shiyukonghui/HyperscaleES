@@ -369,6 +369,61 @@ fn main() {
             assert!(bad == 0, "cuda-oxide LIF 数值错误（bad={bad}）");
         }
 
+        // [0p] cuda-oxide 融合泊松编码统计校验（RNG 与 burn 不同源，仅承诺统计等价）：
+        // p 线性斜坡 [0,1] → 全体发放率 ≈ 0.5、低半 ≈ 0.25、高半 ≈ 0.75，输出全 0/1。
+        {
+            use hyperscalees_envs::snn_mnist::poisson_encode;
+            let n_p = 12000usize;
+            let h_p = 784usize;
+            let t_p = 8usize;
+            let total_p = n_p * h_p;
+            let p_vals: Vec<f32> = (0..total_p)
+                .map(|i| (i as f32 + 0.5) / total_p as f32)
+                .collect();
+            let p_imgs: Tensor<B, 2> = Tensor::from_data(
+                burn::tensor::TensorData::new(p_vals.clone(), [n_p, h_p].to_vec()),
+                &device,
+            );
+            let sp_ox =
+                hyperscalees::oxide::poisson_encode_fused(&p_imgs, t_p, &device).unwrap();
+            let sp_bu = poisson_encode(p_imgs.clone(), t_p);
+            let rate = |v: Vec<f32>| -> (f32, f32, f32, bool) {
+                let is01 = v.iter().all(|x| *x == 0.0 || *x == 1.0);
+                let mut sum = 0.0f32;
+                let mut sum_lo = 0.0f32;
+                let mut sum_hi = 0.0f32;
+                for i in 0..total_p {
+                    let mut r = 0.0f32;
+                    for tt in 0..t_p {
+                        r += v[tt * total_p + i];
+                    }
+                    r /= t_p as f32;
+                    sum += r;
+                    if p_vals[i] < 0.5 {
+                        sum_lo += r;
+                    } else {
+                        sum_hi += r;
+                    }
+                }
+                (
+                    sum / total_p as f32,
+                    sum_lo / (total_p as f32 * 0.5),
+                    sum_hi / (total_p as f32 * 0.5),
+                    is01,
+                )
+            };
+            let (g_ox, lo_ox, hi_ox, is01_ox) = rate(sp_ox.into_data().into_vec::<f32>().unwrap());
+            let (g_bu, lo_bu, hi_bu, is01_bu) = rate(sp_bu.into_data().into_vec::<f32>().unwrap());
+            println!(
+                "[0p] oxide_poisson_check   : oxide rate={g_ox:.4}/{lo_ox:.4}/{hi_ox:.4} 01={is01_ox} | burn {g_bu:.4}/{lo_bu:.4}/{hi_bu:.4} (应 ≈0.5/0.25/0.75)"
+            );
+            assert!(
+                is01_ox && (g_ox - 0.5).abs() < 0.01 && (lo_ox - 0.25).abs() < 0.01
+                    && (hi_ox - 0.75).abs() < 0.01,
+                "cuda-oxide 泊松编码统计异常: {g_ox}/{lo_ox}/{hi_ox}"
+            );
+        }
+
         // [0e] 通用 gemm 帮助函数校验（容差 1e-1：burn 侧该形状启用 TF32，cuBLAS 为
         // 纯 fp32，差异 ~2.5e-4 相对值；转置/布局错误会给出 O(1) 误差仍能抓住）。
         let m0 = 12usize;
@@ -754,6 +809,14 @@ fn main() {
         u.lower(x3).float().sum_dim(0).squeeze_dim::<2>(0).mean()
     });
     println!("[5b] poisson_single           : {cur:8.2} ms/chunk");
+
+    // ---- 4P. cuda-oxide 融合泊松编码（对照 [5b] burn 基线）----
+    let cur = time_ms(true, iters, || {
+        hyperscalees::oxide::poisson_encode_fused(&x2, t, &device)
+            .unwrap()
+            .mean()
+    });
+    println!("[4P] poisson_fused_oxide    : {cur:8.2} ms/chunk");
 
     // ---- 6. 随机数生成吞吐 ----
     let cur = time_ms(true, iters, || {

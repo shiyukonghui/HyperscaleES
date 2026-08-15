@@ -162,13 +162,17 @@ v0.1.0 / v0.2.0 社区版已发布）是一个 **Rust-to-CUDA 编译器**：
   PTX（64.6KB，单 entry，E1/E2 优化后；旧 3-entry 版含 dump 诊断内核）；
 - `burn_impl/hyperscalees-kernels/ptx/lif_fused.ptx`：LIF 融合内核 PTX
   （5.2KB，单 entry）；
+- `burn_impl/hyperscalees-kernels/ptx/poisson_encode_fused.ptx`：泊松融合
+  内核 PTX（7.3KB，单 entry，xorshift32 + 行 pitch 参数）；
 - `burn_impl/hyperscalees-kernels/src/einsum_pair_fused_oxide.rs`：einsum 内核
   源码归档（从 cuda-oxide 示例复制，含完整验证 host 代码）；
 - `burn_impl/hyperscalees-kernels/src/lif_fused_oxide.rs`：LIF 内核源码归档；
+- `burn_impl/hyperscalees-kernels/src/poisson_encode_fused_oxide.rs`：泊松内核
+  源码归档；
 - `burn_impl/hyperscalees/src/oxide.rs`：`load_kernel` / `launch` /
   `launch_on_stream` / `kernel_function` / `prng_normal_half`（默认噪声路径）/
   `einsum_pair_fused`（默认 einsum 路径，g_s 输出 stride 参数）/
-  `lif_fused`（默认 LIF 扫描路径）+
+  `lif_fused`（默认 LIF 扫描路径）/ `poisson_encode_fused`（默认泊松路径）+
   `einsum_dump`/`einsum_dump_acc`（调试封装）；
 - `burn_impl/hyperscalees/src/cublas.rs`：`gen_lora_noise_antipodal` 默认
   走 oxide 内核（`GEN_CUBEK=1` 回退）；
@@ -324,9 +328,52 @@ copy target\debug\deps\rustc_codegen_cuda.dll target\debug\librustc_codegen_cuda
 
 ---
 
+## 10. 泊松融合内核：阶段 C-4（✅ 完成）
+
+### 10.1 内核与集成
+
+- `snn_poisson` 示例（cuda-oxide）：`poisson_encode_fused(probs, out, total,
+  in_dim, s, t, seed_0..3)`——每线程一个元素，沿 T 每步现场生成
+  Uniform(0,1)（**xorshift32**）并与像素强度比较，单次启动替代 burn 的
+  「random + lower + float」多内核路径；
+- PTX：7.3KB 单 entry（llvm-link + internalize/globaldce + opt O3 +
+  `llc -fp-contract=fast`），嵌入 `ptx/poisson_encode_fused.ptx`；
+- 集成：`oxide::poisson_encode_fused` 宿主封装（10 参数 A8 对齐 + cubecl
+  主流启动）；`accumulate_train` 默认 `POISSON=oxide`（`POISSON=burn` 切回）。
+
+### 10.2 踩坑记录（两个隐蔽 bug）
+
+1. **LLVM 优化 bug（taus+lcg 状态机）**：`int_random = s0^s1^s2^s3` 在
+   opt -O2/-O3（甚至 -O1）后错写——taus_step_1 的完整结果被替换成部分值
+   `(z<<4)`、s0' 丢失（IR 层即错，opt 引入）。表现：发放率与 p 无关（平
+   0.387）。尝试均无效：`#[noinline]`（opt 仍内联）、`&mut` 参数重构、
+   编译期展开 8 步（无 phi 直线数据流）。**换用单变量自依赖的 xorshift32 后
+   正确**（prng 内核幸存因其循环全展开 + 数组语义，碰巧避开）。
+2. **burn 256B 行对齐 pitch**：784 f32 = 3136B → 行 stride 832 ≠ 784（与
+   einsum 的 g_s 同源）。扁平假设下读写全部错位：发放率与 p 无关且约少 1/8
+   步（[256,256] 恰好 1024B 对齐所以小测试通过，误导排查）。修复：内核加
+   `in_dim` + `s`（行 stride）参数，按 `row·s + col` 寻址，输出步距
+   `(total/in_dim)·s`。
+
+### 10.3 校验与性能（同窗口）
+
+- `[0p] oxide_poisson_check`：12000×784 线性斜坡 p ∈ [0,1] →
+  **oxide 0.5050/0.2500/0.7570 vs burn 0.5051/0.2501/0.7571**（统计等价，
+  输出全 0/1）；
+- `[4P] poisson_fused_oxide` = 1.6ms vs `[5b] poisson_single`（burn）
+  = 2.4ms/chunk；
+- 训练同窗口 A/B（30 epoch）：POISSON=oxide 0.15s vs burn 0.15s/epoch
+  （poisson 相位已非热点，省 ~4ms/epoch 在测量精度内）；
+- 独立诊断（临时 bin 验证后删除）：p=0.1/0.5/0.9 常数张量 → 0.1004/0.5000/
+  0.8995，p 响应精确。
+
+---
+
 *更新日志：2026-08 分支建立，调研完成；阶段 A/B 完成（工具链打通 +
 PRNG 内核集成默认启用）；阶段 C-2 einsum 内核正确性完成（g_s stride 修复 +
 [0m] 校验 + 训练收敛一致）；性能达标（E1 bank 冲突修复 + E2 除法提升 +
 KS=192 → 6.8-7.7ms < cuBLAS 8.4-8.9ms），**默认路径已翻转为 oxide**；
 阶段 C-3 LIF 融合完成（[0d] 逐位一致 + 0.89ms < 1.72ms + 训练 0.15s），
-**默认 LIF=oxide**；下一步阶段 C-4：泊松编码融合。*
+**默认 LIF=oxide**；阶段 C-4 泊松融合完成（[0p] 统计等价 + 1.6ms < 2.4ms，
+踩平 LLVM RNG 误编译 + 行 pitch 两个隐蔽 bug），**默认 POISSON=oxide**；
+下一步阶段 C-5：可选 batched matmul 内核。*

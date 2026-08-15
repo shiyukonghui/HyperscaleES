@@ -529,6 +529,88 @@ pub fn lif_fused(
     Ok(out)
 }
 
+// ===========================================================================
+// 具体内核：融合泊松编码（cuda-oxide 编译，PTX 内嵌）
+// ===========================================================================
+
+/// 泊松内核 PTX（cuda-oxide 编译：`snn_poisson` 示例 → llvm-link libdevice →
+/// opt 裁剪 → llc（-fp-contract=fast）→ PTX，见集成计划文档）。
+const POISSON_PTX: &[u8] = concat!(
+    include_str!("../../hyperscalees-kernels/ptx/poisson_encode_fused.ptx"),
+    "\0"
+)
+.as_bytes();
+
+/// 已加载的泊松内核（进程级缓存，加载一次）。
+fn poisson_kernel(device: &CudaDevice) -> &'static OxideKernel {
+    static KERNEL: std::sync::OnceLock<OxideKernel> = std::sync::OnceLock::new();
+    KERNEL.get_or_init(|| {
+        load_kernel(device, POISSON_PTX, "poisson_encode_fused")
+            .expect("加载 poisson_encode_fused PTX 失败")
+    })
+}
+
+/// 融合泊松编码（cuda-oxide 内核）：`(batch, in)` 像素强度 → `(t, batch, in)`
+/// 0/1 尖峰，u ~ Uniform(0,1)（xorshift32 现场生成）< p 比较，单次启动。
+///
+/// 统计语义与 `hyperscalees_envs::snn_mnist::poisson_encode` 一致（每元素每
+/// 时间步独立 Bernoulli，发放率 ≈ 像素值）；RNG 与 burn 不同源，不要求逐位一致
+/// （参考实现即如此）。支持 burn 256B 行对齐 pitch（行 stride ≠ in_dim，
+/// 如 784 f32 → 832；内核按 row·s + col 寻址）。
+pub fn poisson_encode_fused(
+    images: &burn::tensor::Tensor<crate::B, 2>,
+    t: usize,
+    device: &CudaDevice,
+) -> Result<burn::tensor::Tensor<crate::B, 3>, String> {
+    use crate::cublas::{as_cube, raw_ptr};
+    let [batch, in_dim] = images.dims();
+    let total = batch * in_dim;
+    assert!(total > 0 && total <= u32::MAX as usize, "poisson total 溢出");
+    assert!(t <= 8, "poisson 内核编译期展开上限 T ≤ 8，实际 {t}");
+
+    let out: burn::tensor::Tensor<crate::B, 3> =
+        burn::tensor::Tensor::zeros([t, batch, in_dim], device);
+    let ci = as_cube(images);
+    let co = as_cube(&out);
+    let pi = raw_ptr(&ci, device);
+    let po = raw_ptr(&co, device);
+    // 行 stride（元素单位；burn 256B 对齐 pitch）。
+    let s_p = ci.meta.strides()[0] as u32;
+    let s_o = co.meta.strides()[1] as u32;
+    debug_assert_eq!(s_p, s_o, "probs/out 行 stride 不一致");
+
+    let seeds = next_seeds();
+    let kernel = poisson_kernel(device);
+    #[repr(C, align(8))]
+    struct A8<T>(T);
+    let mut arg_p = A8(pi as *mut c_void);
+    let mut arg_o = A8(po as *mut c_void);
+    let mut arg_tot = A8(total as u32);
+    let mut arg_id = A8(in_dim as u32);
+    let mut arg_s = A8(s_p);
+    let mut arg_t = A8(t as u32);
+    let mut arg_s0 = A8(seeds[0]);
+    let mut arg_s1 = A8(seeds[1]);
+    let mut arg_s2 = A8(seeds[2]);
+    let mut arg_s3 = A8(seeds[3]);
+    let mut args: [*mut c_void; 10] = [
+        &mut arg_p.0 as *mut *mut c_void as *mut c_void,
+        &mut arg_o.0 as *mut *mut c_void as *mut c_void,
+        &mut arg_tot.0 as *mut u32 as *mut c_void,
+        &mut arg_id.0 as *mut u32 as *mut c_void,
+        &mut arg_s.0 as *mut u32 as *mut c_void,
+        &mut arg_t.0 as *mut u32 as *mut c_void,
+        &mut arg_s0.0 as *mut u32 as *mut c_void,
+        &mut arg_s1.0 as *mut u32 as *mut c_void,
+        &mut arg_s2.0 as *mut u32 as *mut c_void,
+        &mut arg_s3.0 as *mut u32 as *mut c_void,
+    ];
+    const BLOCK: u32 = 256;
+    let grid = (total as u32).div_ceil(BLOCK);
+    unsafe { launch(kernel, device, grid, 1, 1, BLOCK, 1, 1, 0, &mut args) }?;
+    Ok(out)
+}
+
 /// 诊断封装：dump 首个 chunk 的 acc 槽（tx<2 线程），返回 CPU 拷贝。
 pub fn einsum_dump_acc(
     a_t: &burn::tensor::Tensor<crate::B, 3>,
