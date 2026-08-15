@@ -35,6 +35,11 @@ pub struct LifParams {
     pub v_th: f32,
 }
 
+/// LIF 扫描闭包：`(params, current (T,batch,h), v0 (batch,h)) -> spikes (T,batch,h)`。
+/// 默认实现为 [`run_lif`]（逐时间步 burn 元素级算子）；facade（hyperscalees
+/// crate，可依赖 cuda-oxide）可注入融合内核实现（阶段 C-3）。
+pub type LifFn<'a> = dyn Fn(LifParams, Tensor<B, 3>, Tensor<B, 2>) -> Tensor<B, 3> + 'a;
+
 /// Single LIF update: leak -> charge -> fire -> reset.
 ///
 /// ```text
@@ -527,6 +532,23 @@ impl TrainableVthSnn {
         th2: f32,
         noise: &[(Tensor<B, 3>, Tensor<B, 3>)], // 3 层 (A'_h(n/2,r,a), B'_h(n/2,r,b))
     ) -> Tensor<B, 2> {                        // (n, C)
+        // 默认 LIF 实现 = run_lif（burn 逐时间步元素级算子）。
+        self.forward_batched_lora_half_with_lif(x, th1, th2, noise, &|p, cur, v0| {
+            run_lif(p, cur, v0)
+        })
+    }
+
+    /// [`Self::forward_batched_lora_half`] 的 LIF 可注入版：`lif` 闭包替换
+    /// 两层的 `run_lif` 扫描（facade 可注入 cuda-oxide 融合内核，阶段 C-3）。
+    /// 数学语义与无钩子版逐位一致（仅 LIF 实现被替换）。
+    pub fn forward_batched_lora_half_with_lif(
+        &self,
+        x: Tensor<B, 3>,                       // (T, n, in)
+        th1: f32,
+        th2: f32,
+        noise: &[(Tensor<B, 3>, Tensor<B, 3>)], // 3 层 (A'_h(n/2,r,a), B'_h(n/2,r,b))
+        lif: &LifFn,
+    ) -> Tensor<B, 2> {                        // (n, C)
         let [_, n, _] = x.dims();
         let device = x.device().clone();
         let p1 = LifParams { tau_m: self.tau_m, v_th: th1 };
@@ -535,12 +557,12 @@ impl TrainableVthSnn {
         // 第 1 层：半噪声批量 LoRA 线性投影，再 LIF 扫描。
         let cur1 = lora_linear_batched_half(x, &self.fc1.weight, &noise[0]); // (T, n, h1)
         let v0_1 = Tensor::<B, 2>::zeros([n, self.fc1.weight.dims()[0]], &device);
-        let spikes1 = run_lif(p1, cur1, v0_1); // (T, n, h1)
+        let spikes1 = lif(p1, cur1, v0_1); // (T, n, h1)
 
         // 第 2 层。
         let cur2 = lora_linear_batched_half(spikes1, &self.fc2.weight, &noise[1]); // (T, n, h2)
         let v0_2 = Tensor::<B, 2>::zeros([n, self.fc2.weight.dims()[0]], &device);
-        let spikes2 = run_lif(p2, cur2, v0_2); // (T, n, h2)
+        let spikes2 = lif(p2, cur2, v0_2); // (T, n, h2)
 
         // 读出：时间轴上的平均发放率 -> fc3（噪声注入同为 batched matmul，m=1）-> gain。
         let rate = spikes2.mean_dim(0).squeeze_dim::<2>(0); // (n, h2)

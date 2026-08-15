@@ -457,6 +457,78 @@ pub fn einsum_pair_fused(
     Ok((g_raw, g_ones))
 }
 
+// ===========================================================================
+// 具体内核：融合 LIF 扫描（cuda-oxide 编译，PTX 内嵌）
+// ===========================================================================
+
+/// LIF 内核 PTX（cuda-oxide 编译：`snn_lif` 示例 → llvm-link libdevice →
+/// opt 裁剪 → llc（-fp-contract=fast 融合 FMA）→ PTX，见集成计划文档）。
+const LIF_PTX: &[u8] =
+    concat!(include_str!("../../hyperscalees-kernels/ptx/lif_fused.ptx"), "\0").as_bytes();
+
+/// 已加载的 LIF 内核（进程级缓存，加载一次）。
+fn lif_kernel(device: &CudaDevice) -> &'static OxideKernel {
+    static KERNEL: std::sync::OnceLock<OxideKernel> = std::sync::OnceLock::new();
+    KERNEL.get_or_init(|| {
+        load_kernel(device, LIF_PTX, "lif_fused").expect("加载 lif_fused PTX 失败")
+    })
+}
+
+/// 融合 LIF 扫描（cuda-oxide 内核）：`(T, n, h)` 输入电流 → `(T, n, h)` 0/1 尖峰。
+///
+/// 与 `hyperscalees_models::snn::run_lif` 语义逐位一致（hard reset）：
+/// `charged = v + (cur - v)·(1/tau_m)`，`spike = (charged ≥ v_th)`，`v = charged·(1-spike)`。
+/// 每线程处理一个 (n, h) 元素沿 T 顺序扫描（无中间张量/逐时间步 launch）。
+///
+/// 要求：`cur` 连续（innermost stride 1，支持行对齐 pitch 的 dim0 不做假设——
+/// 实际按连续访问）；`v0` 形状 `(n, h)`。
+pub fn lif_fused(
+    cur: &burn::tensor::Tensor<crate::B, 3>,
+    v0: &burn::tensor::Tensor<crate::B, 2>,
+    tau_m: f32,
+    v_th: f32,
+    device: &CudaDevice,
+) -> Result<burn::tensor::Tensor<crate::B, 3>, String> {
+    use crate::cublas::{as_cube, raw_ptr};
+    let [t, n, h] = cur.dims();
+    let total = n * h;
+    assert_eq!(v0.dims(), [n, h], "LIF v0 形状不匹配: {:?} vs {:?}", v0.dims(), [n, h]);
+    assert!(total > 0 && total <= u32::MAX as usize, "LIF total 溢出");
+
+    let out: burn::tensor::Tensor<crate::B, 3> =
+        burn::tensor::Tensor::zeros([t, n, h], device);
+    let cc = as_cube(cur);
+    let cv = as_cube(v0);
+    let co = as_cube(&out);
+    let pc = raw_ptr(&cc, device);
+    let pv = raw_ptr(&cv, device);
+    let po = raw_ptr(&co, device);
+
+    let kernel = lif_kernel(device);
+    #[repr(C, align(8))]
+    struct A8<T>(T);
+    let mut arg_c = A8(pc as *mut c_void);
+    let mut arg_v = A8(pv as *mut c_void);
+    let mut arg_o = A8(po as *mut c_void);
+    let mut arg_tot = A8(total as u32);
+    let mut arg_t = A8(t as u32);
+    let mut arg_tau = A8(tau_m);
+    let mut arg_th = A8(v_th);
+    let mut args: [*mut c_void; 7] = [
+        &mut arg_c.0 as *mut *mut c_void as *mut c_void,
+        &mut arg_v.0 as *mut *mut c_void as *mut c_void,
+        &mut arg_o.0 as *mut *mut c_void as *mut c_void,
+        &mut arg_tot.0 as *mut u32 as *mut c_void,
+        &mut arg_t.0 as *mut u32 as *mut c_void,
+        &mut arg_tau.0 as *mut f32 as *mut c_void,
+        &mut arg_th.0 as *mut f32 as *mut c_void,
+    ];
+    const BLOCK: u32 = 256;
+    let grid = (total as u32).div_ceil(BLOCK);
+    unsafe { launch(kernel, device, grid, 1, 1, BLOCK, 1, 1, 0, &mut args) }?;
+    Ok(out)
+}
+
 /// 诊断封装：dump 首个 chunk 的 acc 槽（tx<2 线程），返回 CPU 拷贝。
 pub fn einsum_dump_acc(
     a_t: &burn::tensor::Tensor<crate::B, 3>,

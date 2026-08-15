@@ -802,8 +802,23 @@ fn main() {
             // 注：cuBLAS 版全量前向（forward_batched_lora_cublas）在训练形状上并不
             // 更快——cuBLAS strided-batched 对 12000 批×小矩阵明显慢于 cubecl 的
             // batched matmul（A/B 实测 +20ms/epoch），故前向保持 burn。
+            // LIF 扫描默认 cuda-oxide 融合内核（阶段 C-3：[0d] 逐位一致校验通过、
+            // [4L] 0.89ms vs burn 1.72ms/chunk、训练 A/B 0.15s vs 0.16s/epoch）；
+            // LIF=burn 切回 run_lif（逐时间步元素级算子）。
             let t0 = std::time::Instant::now();
-            let logits_k = model.forward_batched_lora_half(spikes_k, th1, th2, &noises);
+            let logits_k = match std::env::var("LIF").as_deref() {
+                Ok("burn") => model.forward_batched_lora_half(spikes_k, th1, th2, &noises),
+                _ => model.forward_batched_lora_half_with_lif(
+                    spikes_k,
+                    th1,
+                    th2,
+                    &noises,
+                    &|p, cur, v0| {
+                        hyperscalees::oxide::lif_fused(&cur, &v0, p.tau_m, p.v_th, &device)
+                            .expect("cuda-oxide LIF 失败")
+                    },
+                ),
+            };
             sync_now();
             pt.fwd += t0.elapsed().as_secs_f32();
             // 本段 raw fitness（GPU 张量）与正确数（GPU 标量累积）。

@@ -331,6 +331,44 @@ fn main() {
             "cuda-oxide einsum 数值错误"
         );
 
+        // [0d] cuda-oxide 融合 LIF 扫描校验：lif_fused vs burn run_lif。
+        // 内核与 run_lif 同为 f32 同序列（v + (cur - v)·leak → fma 后逐位一致），
+        // 用随机 v0（非零初值路径）与训练同款 tau_m=20/v_th=0.3。
+        {
+            use hyperscalees_models::snn::{run_lif, LifParams};
+            let cur_l: Tensor<B, 3> = Tensor::random(
+                [5, 12000, 128],
+                Distribution::Normal(0.0, 1.0),
+                &device,
+            );
+            let v0_l: Tensor<B, 2> =
+                Tensor::random([12000, 128], Distribution::Normal(0.0, 1.0), &device);
+            let sp_ox =
+                hyperscalees::oxide::lif_fused(&cur_l, &v0_l, 20.0, 0.3, &device).unwrap();
+            let sp_ref = run_lif(
+                LifParams { tau_m: 20.0, v_th: 0.3 },
+                cur_l,
+                v0_l,
+            );
+            let vo = sp_ox.into_data().into_vec::<f32>().unwrap();
+            let vr = sp_ref.into_data().into_vec::<f32>().unwrap();
+            let bad = vo
+                .iter()
+                .zip(vr.iter())
+                .filter(|(x, y)| (*x - *y).abs() > 1e-6)
+                .count();
+            let maxd = vo
+                .iter()
+                .zip(vr.iter())
+                .map(|(x, y)| (*x - *y).abs())
+                .fold(0.0_f32, f32::max);
+            println!(
+                "[0d] oxide_lif_check          : bad={bad}/{} maxdiff={maxd:.2e} (应全 0)",
+                vo.len()
+            );
+            assert!(bad == 0, "cuda-oxide LIF 数值错误（bad={bad}）");
+        }
+
         // [0e] 通用 gemm 帮助函数校验（容差 1e-1：burn 侧该形状启用 TF32，cuBLAS 为
         // 纯 fp32，差异 ~2.5e-4 相对值；转置/布局错误会给出 O(1) 误差仍能抓住）。
         let m0 = 12usize;
@@ -639,6 +677,20 @@ fn main() {
             (g1 + g2).mean()
         });
         println!("[4m] einsum_pair_oxide     : {cur:8.2} ms/chunk");
+
+        // ---- 4d. cuda-oxide 融合 LIF 扫描（对照 [8] lif_loop burn 基线）----
+        let cur_d: Tensor<B, 3> = Tensor::random(
+            [t, n, 128],
+            Distribution::Normal(0.0, 1.0),
+            &device,
+        );
+        let v0_d: Tensor<B, 2> = Tensor::zeros([n, 128], &device);
+        let cur = time_ms(true, iters, || {
+            hyperscalees::oxide::lif_fused(&cur_d, &v0_d, 20.0, 0.3, &device)
+                .unwrap()
+                .mean()
+        });
+        println!("[4L] lif_fused_oxide       : {cur:8.2} ms/chunk");
     }
     }
 

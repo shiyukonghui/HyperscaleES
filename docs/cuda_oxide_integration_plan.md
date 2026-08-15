@@ -159,12 +159,16 @@ v0.1.0 / v0.2.0 社区版已发布）是一个 **Rust-to-CUDA 编译器**：
 - `burn_impl/hyperscalees-kernels/ptx/prng_normal_half.ptx`：cuda-oxide 编译
   出的 PRNG 内核 PTX（17.7KB，`include_str!` 嵌入宿主）；
 - `burn_impl/hyperscalees-kernels/ptx/einsum_pair_fused.ptx`：einsum 融合内核
-  PTX（~99KB，3 个 entry：主内核 + 2 个 dump 诊断内核）；
+  PTX（64.6KB，单 entry，E1/E2 优化后；旧 3-entry 版含 dump 诊断内核）；
+- `burn_impl/hyperscalees-kernels/ptx/lif_fused.ptx`：LIF 融合内核 PTX
+  （5.2KB，单 entry）；
 - `burn_impl/hyperscalees-kernels/src/einsum_pair_fused_oxide.rs`：einsum 内核
   源码归档（从 cuda-oxide 示例复制，含完整验证 host 代码）；
+- `burn_impl/hyperscalees-kernels/src/lif_fused_oxide.rs`：LIF 内核源码归档；
 - `burn_impl/hyperscalees/src/oxide.rs`：`load_kernel` / `launch` /
   `launch_on_stream` / `kernel_function` / `prng_normal_half`（默认噪声路径）/
-  `einsum_pair_fused`（EINSUM=oxide 路径，g_s 输出 stride 参数）+
+  `einsum_pair_fused`（默认 einsum 路径，g_s 输出 stride 参数）/
+  `lif_fused`（默认 LIF 扫描路径）+
   `einsum_dump`/`einsum_dump_acc`（调试封装）；
 - `burn_impl/hyperscalees/src/cublas.rs`：`gen_lora_noise_antipodal` 默认
   走 oxide 内核（`GEN_CUBEK=1` 回退）；
@@ -294,8 +298,35 @@ copy target\debug\deps\rustc_codegen_cuda.dll target\debug\librustc_codegen_cuda
 
 ---
 
+## 9. LIF 融合内核：阶段 C-3（✅ 完成）
+
+### 9.1 内核与集成
+
+- `snn_lif` 示例（cuda-oxide）：`lif_fused(cur (T,total), v0 (total), out, total, t,
+  tau_m, v_th)`——每线程一个 (n, h) 元素沿 T 顺序扫描（hard reset），单次启动
+  替代 `run_lif` 的逐时间步「slice + 3~4 个元素级算子 + unsqueeze + cat」（每层
+  T 步 × 每步 ~5 次 kernel launch + 中间张量分配）；
+- PTX：5.2KB 单 entry（llvm-link + internalize/globaldce + opt O3 +
+  `llc -fp-contract=fast`，FMA 已融合），嵌入
+  `burn_impl/hyperscalees-kernels/ptx/lif_fused.ptx`；
+- 集成：`oxide::lif_fused` 宿主封装（7 参数 A8 对齐 + cubecl 主流启动）；
+  models crate 增加 `LifFn` 钩子与 `forward_batched_lora_half_with_lif`；
+  `accumulate_train` 默认 `LIF=oxide`（`LIF=burn` 切回）。
+
+### 9.2 校验与性能（同窗口）
+
+- `[0d] oxide_lif_check`：随机 cur + 随机 v0（非零初值路径），(T=5, n=12000,
+  h=128)，tau_m=20/v_th=0.3 → **bad=0/7.68M，maxdiff=0.00e0（逐位一致）**；
+- `[4L] lif_fused_oxide` = 0.89ms vs `[8] lif_loop`（burn 逐时间步）= 1.72ms
+  /chunk（快 ~2×）；
+- 训练同窗口 A/B（20 epoch）：LIF=oxide 0.15s vs LIF=burn 0.16s/epoch
+  （省 ~10ms/epoch；fwd 中 matmul 仍为主）。
+
+---
+
 *更新日志：2026-08 分支建立，调研完成；阶段 A/B 完成（工具链打通 +
 PRNG 内核集成默认启用）；阶段 C-2 einsum 内核正确性完成（g_s stride 修复 +
 [0m] 校验 + 训练收敛一致）；性能达标（E1 bank 冲突修复 + E2 除法提升 +
 KS=192 → 6.8-7.7ms < cuBLAS 8.4-8.9ms），**默认路径已翻转为 oxide**；
-下一步阶段 C-3：LIF 融合。*
+阶段 C-3 LIF 融合完成（[0d] 逐位一致 + 0.89ms < 1.72ms + 训练 0.15s），
+**默认 LIF=oxide**；下一步阶段 C-4：泊松编码融合。*
