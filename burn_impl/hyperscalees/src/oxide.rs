@@ -1,10 +1,16 @@
-//! cuda-oxide 鍐呮牳鐨勫涓讳晶鍔犺浇/鍚姩灏佽锛堜粎 `gpu` feature锛夈€?//!
-//! 闆嗘垚璺緞锛堣 `docs/cuda_oxide_integration_plan.md`锛夛細
-//! 鐢?cuda-oxide 缂栬瘧鍣ㄦ妸 `hyperscalees-kernels` 鐨?Rust 鍐呮牳缂栬瘧涓?PTX 鏂囨湰锛?//! 瀹夸富缁?CUDA driver API 鍔犺浇锛坄cuModuleLoadData`锛夊苟鍚姩锛坄cuLaunchKernel`锛夈€?//!
-//! 涓?[`crate::cublas`] 鍚屼竴濂楁満鍒讹細module/function 鎸傚湪 cubecl 鐨?context 涓?//! 锛堝鐢?`cublas::state` 鐨?ctx锛夛紝鍚姩缁戝埌 cubecl 鐨勫師濮?stream
-//! 锛坄raw_stream`锛夆啋 涓?burn 绠楀瓙澶╃劧鍚屾祦鏈夊簭銆侀浂鍚屾锛堟帰閽堝疄娴嬪彲鐢級銆?//!
-//! 鍐呮牳鍙傛暟鐩存帴浼?burn 寮犻噺鐨勫師濮嬭澶囨寚閽堬紙`cublas::raw_ptr` 鍚屾 resolve
-//! 鏈哄埗锛変笌鏄惧紡鏍囬噺锛坘ernelParams 鎸囧悜鍙傛暟鍊硷紝瑙?[`launch`]锛夈€?
+//! cuda-oxide 内核的宿主侧加载/启动封装（仅 `gpu` feature）。
+//!
+//! 集成路径（见 `docs/cuda_oxide_integration_plan.md`）：
+//! 用 cuda-oxide 编译器把 `hyperscalees-kernels` 的 Rust 内核编译为 PTX 文本，
+//! 宿主经 CUDA driver API 加载（`cuModuleLoadData`）并启动（`cuLaunchKernel`）。
+//!
+//! 与 [`crate::cublas`] 同一套机制：module/function 挂在 cubecl 的 context 上
+//! （复用 `cublas::state` 的 ctx），启动绑到 cubecl 的原始 stream
+//! （`raw_stream`）→ 与 burn 算子天然同流有序、零同步。
+//!
+//! 内核参数直接传 burn 张量的原始设备指针（`cublas::raw_ptr` 同款 resolve
+//! 机制）与显式标量（kernelParams 指向参数值，见 [`launch`]）。
+
 use std::ffi::c_void;
 
 use burn::backend::cuda::CudaDevice;
@@ -16,30 +22,39 @@ use cubecl::Runtime;
 
 use crate::cublas::state as cublas_state;
 
-/// 鏈嶅姟鍣ㄧ被鍨嬶紙vendored cubecl-cuda 鐨?`CudaServer`锛夈€?type Server = <CudaRuntime as Runtime>::Server;
+/// 服务器类型（vendored cubecl-cuda 的 `CudaServer`）。
+type Server = <CudaRuntime as Runtime>::Server;
 
-/// 宸插姞杞界殑 cuda-oxide 鍐呮牳锛坢odule + function 鍙ユ焺锛夈€?pub struct OxideKernel {
+/// 已加载的 cuda-oxide 内核（module + function 句柄）。
+pub struct OxideKernel {
     module: cudarc::driver::sys::CUmodule,
     function: cudarc::driver::sys::CUfunction,
 }
 
-/// 渚涙帰閽?闆嗘垚浠ｇ爜璁块棶 function 鍙ユ焺銆?pub fn kernel_function(kernel: &OxideKernel) -> cudarc::driver::sys::CUfunction {
+/// 供探针/集成代码访问 function 句柄。
+pub fn kernel_function(kernel: &OxideKernel) -> cudarc::driver::sys::CUfunction {
     kernel.function
 }
 
-// 鍙ユ焺鍙湪鏈ā鍧楀唴鎸夊簭浣跨敤锛屼笉璺ㄧ嚎绋嬪叡浜彲鍙樿闂紙涓?CublasState 鐩稿悓绾﹀畾锛夈€?unsafe impl Send for OxideKernel {}
+// 句柄只在本模块内按序使用，不跨线程共享可变访问（与 CublasState 相同约定）。
+unsafe impl Send for OxideKernel {}
 unsafe impl Sync for OxideKernel {}
 
 impl Drop for OxideKernel {
     fn drop(&mut self) {
-        // 閲婃斁 module锛坒unction 鍙ユ焺闅?module 澶辨晥锛屾棤闇€鍗曠嫭閲婃斁锛夈€?        unsafe {
+        // 释放 module（function 句柄随 module 失效，无需单独释放）。
+        unsafe {
             cudarc::driver::sys::cuModuleUnload(self.module);
         }
     }
 }
 
-/// 浠?PTX 鏂囨湰鍔犺浇涓€涓唴鏍稿嚱鏁般€?///
-/// `ptx` 涓?cuda-oxide 缂栬瘧浜у嚭鐨?PTX 鏂囨湰瀛楄妭锛?*蹇呴』浠?NUL 缁撳熬**锛?/// `cuModuleLoadData` 瑕佹眰锛夛紱`kernel_name` 涓?PTX 鍐呯殑鍑芥暟鍚嶃€?/// 鍔犺浇鍚庡唴鏍镐笌 cubecl 鍏变韩鍚屼竴 context锛堝鐢?cuBLAS 鐨?context锛夈€?pub fn load_kernel(
+/// 从 PTX 文本加载一个内核函数。
+///
+/// `ptx` 为 cuda-oxide 编译产出的 PTX 文本字节（**必须以 NUL 结尾**，
+/// `cuModuleLoadData` 要求）；`kernel_name` 为 PTX 内的函数名。
+/// 加载后内核与 cubecl 共享同一 context（复用 cuBLAS 的 context）。
+pub fn load_kernel(
     device: &CudaDevice,
     ptx: &[u8],
     kernel_name: &str,
@@ -47,7 +62,7 @@ impl Drop for OxideKernel {
     let st = cublas_state(device);
     unsafe {
         cudarc::driver::result::ctx::set_current(st.ctx)
-            .map_err(|e| format!("璁剧疆 CUDA 涓婁笅鏂囧け璐? {e}"))?;
+            .map_err(|e| format!("设置 CUDA 上下文失败: {e}"))?;
 
         let mut module = std::mem::MaybeUninit::<cudarc::driver::sys::CUmodule>::uninit();
         let status = cudarc::driver::sys::cuModuleLoadData(
@@ -55,13 +70,13 @@ impl Drop for OxideKernel {
             ptx.as_ptr() as *const c_void,
         );
         if status != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
-            return Err(format!("cuModuleLoadData 澶辫触: {status:?}"));
+            return Err(format!("cuModuleLoadData 失败: {status:?}"));
         }
         let module = module.assume_init();
 
         let mut function = std::mem::MaybeUninit::<cudarc::driver::sys::CUfunction>::uninit();
         let name =
-            std::ffi::CString::new(kernel_name).map_err(|_| "鍐呮牳鍚嶅惈 NUL".to_string())?;
+            std::ffi::CString::new(kernel_name).map_err(|_| "内核名含 NUL".to_string())?;
         let status = cudarc::driver::sys::cuModuleGetFunction(
             function.as_mut_ptr(),
             module,
@@ -69,7 +84,7 @@ impl Drop for OxideKernel {
         );
         if status != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
             let _ = cudarc::driver::sys::cuModuleUnload(module);
-            return Err(format!("cuModuleGetFunction({kernel_name}) 澶辫触: {status:?}"));
+            return Err(format!("cuModuleGetFunction({kernel_name}) 失败: {status:?}"));
         }
         Ok(OxideKernel {
             module,
@@ -78,10 +93,16 @@ impl Drop for OxideKernel {
     }
 }
 
-/// 鍚姩鍐呮牳锛堢粦鍒?cubecl 涓?stream锛岄浂鍚屾锛涗笌 cuBLAS 璋冪敤鍚屽簭锛夈€?///
-/// `args`锛氬唴鏍稿弬鏁扮殑鎸囬拡鏁扮粍鈥斺€旀瘡涓厓绱犳槸鎸囧悜**鍙傛暟鍊?*鐨勬寚閽?/// 锛坄&mut arg as *mut _ as *mut c_void`锛夛紝涓?`cuLaunchKernel` 鐨?/// `kernelParams` 绾﹀畾涓€鑷淬€傝皟鐢ㄦ柟淇濊瘉鍙傛暟甯冨眬涓?PTX 鍐呮牳绛惧悕鍖归厤銆?/// 娉ㄦ剰锛氬弬鏁板€煎繀椤荤敱**鍏峰悕鍙橀噺**鎵胯浇骞跺瓨娲诲埌 launch 杩斿洖锛堜复鏃跺€间細鎮瀭锛夈€?///
+/// 启动内核（绑到 cubecl 主 stream，零同步；与 cuBLAS 调用同序）。
+///
+/// `args`：内核参数的指针数组——每个元素是指向**参数值**的指针
+/// （`&mut arg as *mut _ as *mut c_void`），与 `cuLaunchKernel` 的
+/// `kernelParams` 约定一致。调用方保证参数布局与 PTX 内核签名匹配。
+/// 注意：参数值必须由**具名变量**承载并存活到 launch 返回（临时值会悬垂）。
+///
 /// # Safety
-/// 鍙傛暟鎸囬拡蹇呴』鎸囧悜涓庡唴鏍哥鍚嶅尮閰嶇殑鍊间笖鍦ㄥ唴鏍告墽琛屾湡闂存湁鏁堛€?pub unsafe fn launch(
+/// 参数指针必须指向与内核签名匹配的值且在内核执行期间有效。
+pub unsafe fn launch(
     kernel: &OxideKernel,
     device: &CudaDevice,
     grid_x: u32,
@@ -95,12 +116,15 @@ impl Drop for OxideKernel {
 ) -> Result<(), String> {
     let st = cublas_state(device);
 
-    // 鐩存帴 launch 鍒?cubecl 涓绘祦锛堝悓娴佹湁搴忋€侀浂鍚屾锛涗笌 cuBLAS 闆嗘垚鍚屾満鍒讹級銆?    // 娉ㄦ剰锛歝uLaunchKernel 鍙傛暟椤哄簭鏄?(..., hStream, kernelParams, extra)鈥斺€?    // kernelParams 浼?args 鏁扮粍銆乪xtra 浼?null锛堟浘鎶婁袱鑰呭啓鍙嶅鑷?    // CUDA_ERROR_INVALID_VALUE锛屾帰閽堥€愬瓧鑺傚姣旀墠瀹氫綅锛夈€?    let dh = DeviceHandle::<Server>::new(device.to_id());
+    // 直接 launch 到 cubecl 主流（同流有序、零同步；与 cuBLAS 集成同机制）。
+    // 注意：cuLaunchKernel 参数顺序是 (..., hStream, kernelParams, extra)——kernelParams
+    // 传 args 数组、extra 传 null（曾把两者写反导致 CUDA_ERROR_INVALID_VALUE）。
+    let dh = DeviceHandle::<Server>::new(device.to_id());
     let stream = dh
         .submit_blocking(|s| s.raw_stream(StreamId::current()) as usize)
-        .expect("鍙?CUDA stream 澶辫触") as *mut cudarc::driver::sys::CUstream_st;
+        .expect("取 CUDA stream 失败") as *mut cudarc::driver::sys::CUstream_st;
     cudarc::driver::result::ctx::set_current(st.ctx)
-        .map_err(|e| format!("璁剧疆 CUDA 涓婁笅鏂囧け璐? {e}"))?;
+        .map_err(|e| format!("设置 CUDA 上下文失败: {e}"))?;
 
     let status = cudarc::driver::sys::cuLaunchKernel(
         kernel.function,
@@ -116,12 +140,13 @@ impl Drop for OxideKernel {
         std::ptr::null_mut(), // extra
     );
     if status != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
-        return Err(format!("cuLaunchKernel 澶辫触: {status:?}"));
+        return Err(format!("cuLaunchKernel 失败: {status:?}"));
     }
     Ok(())
 }
 
-/// 鍦ㄦ寚瀹氭祦涓婂惎鍔ㄥ唴鏍革紙鍐呴儴璺緞锛涗緵鎺㈤拡/鐗规畩鍦烘櫙澶嶇敤锛夈€?pub unsafe fn launch_on_stream(
+/// 在指定流上启动内核（内部路径；供探针/特殊场景复用）。
+pub unsafe fn launch_on_stream(
     kernel: &OxideKernel,
     device: &CudaDevice,
     stream: *mut cudarc::driver::sys::CUstream_st,
@@ -136,7 +161,7 @@ impl Drop for OxideKernel {
 ) -> Result<(), String> {
     let st = cublas_state(device);
     cudarc::driver::result::ctx::set_current(st.ctx)
-        .map_err(|e| format!("璁剧疆 CUDA 涓婁笅鏂囧け璐? {e}"))?;
+        .map_err(|e| format!("设置 CUDA 上下文失败: {e}"))?;
     let status = cudarc::driver::sys::cuLaunchKernel(
         kernel.function,
         grid_x,
@@ -151,26 +176,33 @@ impl Drop for OxideKernel {
         std::ptr::null_mut(), // extra
     );
     if status != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
-        return Err(format!("cuLaunchKernel 澶辫触: {status:?}"));
+        return Err(format!("cuLaunchKernel 失败: {status:?}"));
     }
     Ok(())
 }
 
 // ===========================================================================
-// 鍏蜂綋鍐呮牳锛氬崐閲忔鎬佸櫔澹扮敓鎴愶紙cuda-oxide 缂栬瘧锛孭TX 鍐呭祵锛?// ===========================================================================
+// 具体内核：半量正态噪声生成（cuda-oxide 编译，PTX 内嵌）
+// ===========================================================================
 
-/// PRNG 鍐呮牳 PTX锛坈uda-oxide 缂栬瘧锛歚snn_prng` 绀轰緥 鈫?llvm-link libdevice 鈫?/// opt 瑁佸壀 鈫?llc锛岃 `docs/cuda_oxide_integration_plan.md`锛夈€?/// 娉ㄦ剰锛歝uModuleLoadData 瑕佹眰 PTX 鏂囨湰浠?NUL 缁撳熬锛屾晠鐢?include_str + "\0"銆?const PRNG_PTX: &[u8] =
+/// PRNG 内核 PTX（cuda-oxide 编译：`snn_prng` 示例 → llvm-link libdevice →
+/// opt 裁剪 → llc，见 `docs/cuda_oxide_integration_plan.md`）。
+/// 注意：cuModuleLoadData 要求 PTX 文本以 NUL 结尾，故用 include_str + "\0"。
+const PRNG_PTX: &[u8] =
     concat!(include_str!("../../hyperscalees-kernels/ptx/prng_normal_half.ptx"), "\0").as_bytes();
-/// 姣忕嚎绋嬪厓绱犳暟锛堜笌鍐呮牳甯搁噺 ELEMS_PER_THREAD 涓€鑷达級銆?const PRNG_ELEMS_PER_THREAD: usize = 128;
+/// 每线程元素数（与内核常量 ELEMS_PER_THREAD 一致）。
+const PRNG_ELEMS_PER_THREAD: usize = 128;
 
-/// 宸插姞杞界殑 PRNG 鍐呮牳锛堣繘绋嬬骇缂撳瓨锛屽姞杞戒竴娆★級銆?fn prng_kernel(device: &CudaDevice) -> &'static OxideKernel {
+/// 已加载的 PRNG 内核（进程级缓存，加载一次）。
+fn prng_kernel(device: &CudaDevice) -> &'static OxideKernel {
     static KERNEL: std::sync::OnceLock<OxideKernel> = std::sync::OnceLock::new();
     KERNEL.get_or_init(|| {
-        load_kernel(device, PRNG_PTX, "prng_normal_half").expect("鍔犺浇 prng_normal_half PTX 澶辫触")
+        load_kernel(device, PRNG_PTX, "prng_normal_half").expect("加载 prng_normal_half PTX 失败")
     })
 }
 
-/// 鍐呮牳鍙傛暟绉嶅瓙锛堟瘡娆¤皟鐢ㄨ嚜澧?+ 鏃堕棿娣峰悎锛屼繚璇佹瘡娆＄敓鎴愪笉鍚屽簭鍒楋級銆?fn next_seeds() -> [u32; 4] {
+/// 内核参数种子（每次调用自增 + 时间混合，保证每次生成不同序列）。
+fn next_seeds() -> [u32; 4] {
     use std::sync::atomic::{AtomicU64, Ordering};
     static CTR: AtomicU64 = AtomicU64::new(0x9e37_79b9_7f4a_7c15);
     let c = CTR.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
@@ -190,25 +222,28 @@ impl Drop for OxideKernel {
     [mix(c), mix(c >> 32), mix(t), mix(t >> 32)]
 }
 
-/// 鍗婇噺姝ｆ€佸～鍏咃細`out` (n/2, r, b) 杩炵画寮犻噺锛屽～鍏?`N(mean, std虏)`銆?///
-/// 涓庤缁冪儹璺緞鐨勩€屽崐鍣０銆嶇害瀹氶厤濂楋紙閰嶅鐢辨秷璐规柟闅愬惈鏂藉姞锛夈€傚唴鏍镐负
-/// cuda-oxide 缂栬瘧鐨?PTX锛岀粡 cudarc 鍦?cubecl 涓绘祦涓婂惎鍔紙鍚屾祦鏈夊簭锛岄浂鍚屾锛夈€?pub fn prng_normal_half(
+/// 半量正态填充：`out` (n/2, r, b) 连续张量，填充 `N(mean, std²)`。
+///
+/// 与训练热路径的「半噪声」约定配套（配对由消费方隐含施加）。内核为
+/// cuda-oxide 编译的 PTX，经 cudarc 在 cubecl 主流上启动（同流有序，零同步）。
+pub fn prng_normal_half(
     out: &burn::tensor::Tensor<crate::B, 3>,
     mean: f32,
     std: f32,
     device: &CudaDevice,
 ) -> Result<(), String> {
     let n_elems = out.shape().dims::<3>().iter().product::<usize>();
-    debug_assert_eq!(n_elems % PRNG_ELEMS_PER_THREAD, 0, "鍏冪礌鏁伴渶涓?128 鐨勬暣鏁板€?);
+    debug_assert_eq!(n_elems % PRNG_ELEMS_PER_THREAD, 0, "元素数需为 128 的整数倍");
     let total_threads = (n_elems / PRNG_ELEMS_PER_THREAD) as u32;
 
     let cube = crate::cublas::as_cube(out);
     let ptr = crate::cublas::raw_ptr(&cube, device) as *mut f32;
 
     let seeds = next_seeds();
-    // cuLaunchKernel 瑕佹眰 kernelParams 鎸囧悜鐨?*鍙傛暟鍊兼寜 8 瀛楄妭瀵归綈**锛坲32/f32
-    // 鏅€氭爤鍙橀噺鍙繚璇?4 瀛楄妭瀵归綈锛屼細闅忔満瑙﹀彂 CUDA_ERROR_INVALID_VALUE锛夛紱
-    // 鐢?repr(C, align(8)) 鍖呰姣忎釜鍙傛暟鍊硷紝鍐嶅彇鍐呴儴瀛楁鐨勬寚閽堛€?    #[repr(C, align(8))]
+    // cuLaunchKernel 要求 kernelParams 指向的**参数值按 8 字节对齐**（u32/f32
+    // 普通栈变量只保证 4 字节对齐，会随机触发 CUDA_ERROR_INVALID_VALUE）；
+    // 用 repr(C, align(8)) 包装每个参数值，再取内部字段的指针。
+    #[repr(C, align(8))]
     struct A8<T>(T);
     let mut arg_ptr = A8(ptr as *mut c_void);
     let mut arg_threads = A8(total_threads);
@@ -236,21 +271,27 @@ impl Drop for OxideKernel {
 }
 
 // ===========================================================================
-// 鍏蜂綋鍐呮牳锛氶厤瀵瑰悎骞?einsum锛堣瀺鍚堥澶勭悊锛宑uda-oxide 缂栬瘧锛孭TX 鍐呭祵锛?// ===========================================================================
+// 具体内核：配对合并 einsum（融合预处理，cuda-oxide 编译，PTX 内嵌）
+// ===========================================================================
 
-/// einsum 鍐呮牳 PTX锛坈uda-oxide 缂栬瘧锛歚snn_einsum` 绀轰緥 鈫?llvm-link libdevice 鈫?/// opt 瑁佸壀 鈫?llc锛岃 `docs/cuda_oxide_integration_plan.md`锛夈€?const EINSUM_PTX: &[u8] = concat!(
+/// einsum 内核 PTX（cuda-oxide 编译：`snn_einsum` 示例 → llvm-link libdevice →
+/// opt 裁剪 → llc（-fp-contract=fast 融合 FMA）→ PTX，见集成计划文档）。
+/// 含 3 个 entry：einsum_pair_fused（主）+ 2 个 dump 诊断内核。
+const EINSUM_PTX: &[u8] = concat!(
     include_str!("../../hyperscalees-kernels/ptx/einsum_pair_fused.ptx"),
     "\0"
 )
 .as_bytes();
 
-/// 宸插姞杞界殑 einsum 鍐呮牳锛堣繘绋嬬骇缂撳瓨锛屽姞杞戒竴娆★級銆?fn einsum_kernel(device: &CudaDevice) -> &'static OxideKernel {
+/// 已加载的 einsum 内核（进程级缓存，加载一次）。
+fn einsum_kernel(device: &CudaDevice) -> &'static OxideKernel {
     static KERNEL: std::sync::OnceLock<OxideKernel> = std::sync::OnceLock::new();
     KERNEL.get_or_init(|| {
         let k = load_kernel(device, EINSUM_PTX, "einsum_pair_fused")
-            .expect("鍔犺浇 einsum_pair_fused PTX 澶辫触");
+            .expect("加载 einsum_pair_fused PTX 失败");
         if std::env::var("DEBUG_OXIDE").map(|v| v == "1").unwrap_or(false) {
-            // 鏌ヨ ptxas 瀹為檯鍒嗛厤锛氬瘎瀛樺櫒鏁颁笌 local memory锛堟孩鍑猴級瀛楄妭鏁般€?            let mut regs: i32 = 0;
+            // 查询 ptxas 实际分配：寄存器数与 local memory（溢出）字节数。
+            let mut regs: i32 = 0;
             let mut local: i32 = 0;
             unsafe {
                 cudarc::driver::sys::cuFuncGetAttribute(
@@ -270,21 +311,24 @@ impl Drop for OxideKernel {
     })
 }
 
-/// 铻嶅悎閰嶅 einsum锛坈uda-oxide 鍐呮牳锛夛細涓?`cublas::lora_einsum_pair_cublas`
-/// 鏁板涓€鑷达紙`g_raw = 危_i (f_i+f_{half+i})路A'_i鈯桞'_i`锛宍g_ones = 2路危_i A'_i鈯桞'_i`锛夛紝
-/// 浣嗘妸銆宻lice + f_pair 鍔犳潈 + cat 鎷兼帴銆嶅叏閮ㄨ瀺鍚堣繘鍏变韩鍐呭瓨鍔犺浇锛孉/B 鍚勫彧璇讳竴閬嶏紱
-/// 杈撳嚭缁?f32 鍘熷瓙绱姞锛坰plit-K 鍚堝苟锛夈€?///
-/// 瑕佹眰锛歚a_t`/`b_t` 琛屼富搴忚繛缁紙dim2 stride 1锛宒im0/dim1 stride 鏄惧紡浼犲叆锛?/// 鏀寔 burn 鐨?16 瀛楄妭琛屽榻?pitch锛夛紱`2a 鈮?256`锛涜緭鍑?`(a, b)` 鍏堢疆闆躲€?pub fn einsum_pair_fused(
-    a_t: &burn::tensor::Tensor<crate::B, 3>,    // (half, r, a) 鍗婇噺 A' 鍣０
-    b_t: &burn::tensor::Tensor<crate::B, 3>,    // (half, r, b) 鍗婇噺 B' 鍣０
-    scores: &burn::tensor::Tensor<crate::B, 1>, // (n,) 鍘熷鍒嗘暟
+/// 融合配对 einsum（cuda-oxide 内核）：与 `cublas::lora_einsum_pair_cublas`
+/// 数学一致（`g_raw = Σ_i (f_i+f_{half+i})·A'_i⊗B'_i`，`g_ones = 2·Σ_i A'_i⊗B'_i`），
+/// 但把「slice + f_pair 加权 + cat 拼接」全部融合进共享内存加载，A/B 各只读一遍；
+/// 输出经 f32 原子累加（split-K 合并）。
+///
+/// 要求：`a_t`/`b_t` 行主序连续（dim2 stride 1，dim0/dim1 stride 显式传入，
+/// 支持 burn 的 256B 行对齐 pitch）；`2a ≤ 256`；输出 `(a, b)` 先置零。
+pub fn einsum_pair_fused(
+    a_t: &burn::tensor::Tensor<crate::B, 3>,    // (half, r, a) 半量 A' 噪声
+    b_t: &burn::tensor::Tensor<crate::B, 3>,    // (half, r, b) 半量 B' 噪声
+    scores: &burn::tensor::Tensor<crate::B, 1>, // (n,) 原始分数
     device: &CudaDevice,
 ) -> Result<(burn::tensor::Tensor<crate::B, 2>, burn::tensor::Tensor<crate::B, 2>), String> {
     use crate::cublas::{as_cube, raw_ptr};
     let [half, r, a] = a_t.dims();
     let [_, _, b] = b_t.dims();
-    assert!(half * r > 0 && 2 * a <= 256, "einsum 鍐呮牳瑕佹眰 0 < 2a 鈮?256锛屽疄闄?2a={}", 2 * a);
-    assert_eq!(b_t.dims(), [half, r, b], "b_t 褰㈢姸涓嶅尮閰?);
+    assert!(half * r > 0 && 2 * a <= 256, "einsum 内核要求 0 < 2a ≤ 256，实际 2a={}", 2 * a);
+    assert_eq!(b_t.dims(), [half, r, b], "b_t 形状不匹配");
 
     let ca = as_cube(a_t);
     let cb = as_cube(b_t);
@@ -294,7 +338,7 @@ impl Drop for OxideKernel {
     assert_eq!(
         (s_a[2], s_b[2]),
         (1, 1),
-        "einsum 鍐呮牳瑕佹眰琛屼富搴忚繛缁緭鍏ワ紙innermost stride 1锛夛紝瀹為檯 {:?}/{:?}",
+        "einsum 内核要求行主序连续输入（innermost stride 1），实际 {:?}/{:?}",
         s_a,
         s_b
     );
@@ -304,17 +348,20 @@ impl Drop for OxideKernel {
     let ps = raw_ptr(&cs, device);
     let k_total = half * r;
 
-    // 杈撳嚭锛堣皟鐢ㄦ柟璇箟 = 鍘熷瓙绱姞锛屽繀椤婚浂鍒濆鍖栵級銆?    let g_raw: burn::tensor::Tensor<crate::B, 2> = burn::tensor::Tensor::zeros([a, b], device);
+    // 输出（调用方语义 = 原子累加，必须零初始化）。
+    let g_raw: burn::tensor::Tensor<crate::B, 2> = burn::tensor::Tensor::zeros([a, b], device);
     let g_ones: burn::tensor::Tensor<crate::B, 2> = burn::tensor::Tensor::zeros([a, b], device);
     let cg_raw = as_cube(&g_raw);
     let cg_ones = as_cube(&g_ones);
     let pgr = raw_ptr(&cg_raw, device);
     let pgo = raw_ptr(&cg_ones, device);
 
-    // split-K锛欿=384000 鈫?kslice=4000锛?25 涓?BK=32 鍧楋紝鏁撮櫎锛夛紱N=112 涓€鍒楀潡銆?    let k_slices = std::env::var("OXIDE_KS")
+    // split-K：K=384000 → kslice=2000（192 个切片，grid.y=192 实测最优：
+    // 96→7.66ms / 192→7.23ms / 384→7.30ms，同窗口 cuBLAS 8.6-8.9ms）。
+    let k_slices = std::env::var("OXIDE_KS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or_else(|| std::cmp::max(1, k_total.div_ceil(4000))) as u32;
+        .unwrap_or_else(|| std::cmp::max(1, k_total.div_ceil(2000))) as u32;
     let n_tiles = (b as u32).div_ceil(112);
 
     if std::env::var("DEBUG_OXIDE").map(|v| v == "1").unwrap_or(false) {
@@ -337,12 +384,13 @@ impl Drop for OxideKernel {
     }
 
     let kernel = einsum_kernel(device);
-    // cuLaunchKernel 鍙傛暟鍊奸渶 8 瀛楄妭瀵归綈锛堣 prng_normal_half 娉ㄩ噴锛夈€?    #[repr(C, align(8))]
+    // cuLaunchKernel 参数值需 8 字节对齐（见 prng_normal_half 注释）。
+    #[repr(C, align(8))]
     struct A8<T>(T);
-    // 杈撳嚭寮犻噺鐨勮 stride锛坆urn 256B 瀵归綈 pitch锛屽唴鏍稿師瀛愬啓鍦板潃鐢級
+    // 输出张量的行 stride（burn 256B 对齐 pitch，内核原子写地址用）。
     let g_s_raw = cg_raw.meta.strides()[0] as u32;
     let g_s_ones = cg_ones.meta.strides()[0] as u32;
-    debug_assert_eq!(g_s_raw, g_s_ones, "杈撳嚭寮犻噺 stride 搴斾竴鑷?);
+    debug_assert_eq!(g_s_raw, g_s_ones, "输出张量 stride 应一致");
     let mut arg_a = A8(pa as *mut c_void);
     let mut arg_a0 = A8(s_a[0] as u32);
     let mut arg_a1 = A8(s_a[1] as u32);
@@ -384,7 +432,7 @@ impl Drop for OxideKernel {
             let ru = |p: *mut c_void| *(p as *const u32);
             eprintln!(
                 "[oxide] args: a={:#x} a_s0={} a_s1={} a={} b={:#x} b_s0={} b_s1={} b={} \
-                 scores={:#x} half={} r={} g_raw={:#x} g_ones={:#x} K={} k_slices={} grid=({}, {})",
+                 scores={:#x} half={} r={} g_raw={:#x} g_ones={:#x} g_s={} K={} k_slices={} grid=({}, {})",
                 rd(args[0]),
                 ru(args[1]),
                 ru(args[2]),
@@ -400,6 +448,7 @@ impl Drop for OxideKernel {
                 rd(args[12]),
                 ru(args[13]),
                 ru(args[14]),
+                ru(args[15]),
                 n_tiles,
                 k_slices
             );
@@ -408,7 +457,8 @@ impl Drop for OxideKernel {
     Ok((g_raw, g_ones))
 }
 
-/// 璇婃柇灏佽锛歞ump 棣栦釜 chunk 鐨?acc 妲斤紙tx<2 绾跨▼锛夛紝杩斿洖 CPU 鎷疯礉銆?pub fn einsum_dump_acc(
+/// 诊断封装：dump 首个 chunk 的 acc 槽（tx<2 线程），返回 CPU 拷贝。
+pub fn einsum_dump_acc(
     a_t: &burn::tensor::Tensor<crate::B, 3>,
     b_t: &burn::tensor::Tensor<crate::B, 3>,
     scores: &burn::tensor::Tensor<crate::B, 1>,
@@ -433,7 +483,7 @@ impl Drop for OxideKernel {
     let pad = raw_ptr(&cad, device);
 
     let kernel = load_kernel(device, EINSUM_PTX, "einsum_pair_dump_acc")
-        .expect("鍔犺浇 einsum_pair_dump_acc PTX 澶辫触");
+        .expect("加载 einsum_pair_dump_acc PTX 失败");
     #[repr(C, align(8))]
     struct A8<T>(T);
     let mut arg_a = A8(pa as *mut c_void);
@@ -450,7 +500,6 @@ impl Drop for OxideKernel {
     let mut arg_pa = A8(pad as *mut c_void);
     let mut arg_k = A8(k_total as u32);
     let mut arg_ks = A8(1u32);
-    // dump_acc 鏈?14 鍙傛暟锛堟棤 b_dump锛夆€斺€旂 12 涓槸 acc_dump锛?3/14 鏄?k_total/k_slices
     let mut args: [*mut c_void; 14] = [
         &mut arg_a.0 as *mut *mut c_void as *mut c_void,
         &mut arg_a0.0 as *mut u32 as *mut c_void,
@@ -473,7 +522,8 @@ impl Drop for OxideKernel {
     Ok(ad.into_data().into_vec::<f32>().map_err(|e| format!("{e:?}"))?)
 }
 
-/// 璇婃柇灏佽锛歞ump A_SH/B_SH 鍓?2 琛岋紙璋冭瘯鐢級锛岃繑鍥?CPU 鎷疯礉銆?pub fn einsum_dump(
+/// 诊断封装：dump A_SH/B_SH 前 2 行（调试用），返回 CPU 拷贝。
+pub fn einsum_dump(
     a_t: &burn::tensor::Tensor<crate::B, 3>,
     b_t: &burn::tensor::Tensor<crate::B, 3>,
     scores: &burn::tensor::Tensor<crate::B, 1>,
@@ -502,7 +552,7 @@ impl Drop for OxideKernel {
     let pbd = raw_ptr(&cbd, device);
 
     let kernel = load_kernel(device, EINSUM_PTX, "einsum_pair_dump_tiles")
-        .expect("鍔犺浇 einsum_pair_dump_tiles PTX 澶辫触");
+        .expect("加载 einsum_pair_dump_tiles PTX 失败");
     #[repr(C, align(8))]
     struct A8<T>(T);
     let mut arg_a = A8(pa as *mut c_void);
@@ -538,9 +588,7 @@ impl Drop for OxideKernel {
         &mut arg_ks.0 as *mut u32 as *mut c_void,
     ];
     unsafe {
-        launch(
-            &kernel, device, 1, 1, 1, 256, 1, 1, 0, &mut args,
-        )?;
+        launch(&kernel, device, 1, 1, 1, 256, 1, 1, 0, &mut args)?;
     }
     Ok((
         ad.into_data().into_vec::<f32>().map_err(|e| format!("{e:?}"))?,
@@ -550,7 +598,8 @@ impl Drop for OxideKernel {
 
 #[cfg(test)]
 mod tests {
-    /// 鑷锛氭ā鍧楀彲缂栬瘧銆佺被鍨?绛惧悕瀛樺湪銆?    #[test]
+    /// 自检：模块可编译、类型/签名存在。
+    #[test]
     fn skeleton_compiles() {
         let _ = std::any::type_name::<crate::oxide::OxideKernel>();
     }

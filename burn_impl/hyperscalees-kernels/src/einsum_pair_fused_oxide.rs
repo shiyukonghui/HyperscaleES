@@ -115,8 +115,10 @@ mod kernels {
         static mut B_SH: SharedArray<f32, { BK * BN }> = SharedArray::UNINIT;
 
         let tid = thread::threadIdx_x() as usize;
-        let tx = tid % 32; // m 组（8 列/组）
-        let ty = tid / 32; // n 组（16 组 × 7 列 = 112）
+        // E1：交织分解（原 tx=tid%32 → A 读 stride 8 = 4-way bank 冲突）。
+        // 新映射 warp = 2 m 组 × 16 n 组：A 读 2 路多播、B 读 stride 7 无冲突。
+        let tx = tid / 16; // m 组（8 列/组）
+        let ty = tid % 16; // n 组（16 组 × 7 列 = 112）
         let n0 = (thread::blockIdx_x() as usize) * BN; // 本块 N 起始列
         let ks = ((k_total as usize) + (k_slices as usize) - 1) / (k_slices as usize);
         let k_start = (thread::blockIdx_y() as usize) * ks;
@@ -146,38 +148,44 @@ mod kernels {
             // 加载 A 平铺（融合配对）：A_SH[k][m2] =
             //   m2 < a : a_flat[row][m2] · f(i)     （raw 半）
             //   m2 ≥ a : a_flat[row][m2 - a]        （ones 半）
-            let mut idx = tid;
-            while idx < klen * m2max {
-                let k = idx / m2max;
-                let m2 = idx % m2max;
-                let row = kc + k;
+            // E2：每线程负责同一 k 行内连续的 16 个元素 → 行地址/除法每线程只算 1 次
+            //（原循环每元素算 row/rr 除法 + 行偏移，u32 软件除法很贵）。
+            let kA = tid / 16;
+            if kA < klen {
+                let row = kc + kA;
                 let i = row / rr;
                 let off = i * a_off0 + (row - i * rr) * a_off1;
-                unsafe {
-                    if m2 < a_dim {
-                        let f = f_pair(scores, i, hh);
-                        A_SH[k * APAD + m2] = *a_flat.add(off + m2) * f;
-                    } else {
-                        A_SH[k * APAD + m2] = *a_flat.add(off + m2 - a_dim);
+                let m2b = (tid % 16) * 16;
+                for d in 0..16 {
+                    let m2 = m2b + d;
+                    if m2 < m2max {
+                        unsafe {
+                            if m2 < a_dim {
+                                let f = f_pair(scores, i, hh);
+                                A_SH[kA * APAD + m2] = *a_flat.add(off + m2) * f;
+                            } else {
+                                A_SH[kA * APAD + m2] = *a_flat.add(off + m2 - a_dim);
+                            }
+                        }
                     }
                 }
-                idx += THREADS;
             }
-            // 加载 B 平铺
-            let mut idx = tid;
-            while idx < klen * BN {
-                let k = idx / BN;
-                let n = idx % BN;
-                let nn = n0 + n;
-                if nn < b_dim {
-                    let row = kc + k;
-                    let i = row / rr;
-                    let off = i * b_off0 + (row - i * rr) * b_off1;
-                    unsafe {
-                        B_SH[k * BN + n] = *b_flat.add(off + nn);
+            // 加载 B 平铺（E2 同构：每线程同一 k 行内连续的 7 个元素）
+            let kB = tid / 16;
+            if kB < klen {
+                let row = kc + kB;
+                let i = row / rr;
+                let off = i * b_off0 + (row - i * rr) * b_off1;
+                let nb = (tid % 16) * 7;
+                for d in 0..7 {
+                    let n = nb + d;
+                    let nn = n0 + n;
+                    if nn < b_dim {
+                        unsafe {
+                            B_SH[kB * BN + n] = *b_flat.add(off + nn);
+                        }
                     }
                 }
-                idx += THREADS;
             }
             thread::sync_threads();
 

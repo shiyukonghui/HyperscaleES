@@ -272,24 +272,30 @@ copy target\debug\deps\rustc_codegen_cuda.dll target\debug\librustc_codegen_cuda
 6. **静态共享 >48KB 会被驱动拒载**（JIT 编译失败，BK=64 的 94.5KB 即如此）；
    BK=32 的 47KB 是安全上限附近。
 
-### 8.2 性能现状（不达标，保留对照）
+### 8.2 性能现状（达标：已翻转默认路径 ✅）
 
-- `[4m] einsum_pair_oxide` = 18.1ms vs `[4k] einsum_pair_cublas` = 8.6ms
-  （fc1 形状：M=256, N=784, K=384000，154 GFLOP → 8.5 TFLOP/s vs 18 TFLOP/s）；
-- 训练同窗口 A/B：oxide einsum=0.146s/epoch vs cuBLAS 0.061s（epoch 0.25 vs 0.17）；
-- 内核：512 线程 × 8×7 寄存器块（106 regs）、BK=32、split-K × 原子输出；
-- 流量 1.60GB/18ms ≈ 86GB/s（RTX 4090 ~1TB/s）→ 加载延迟暴露为主因：
-  - 每 chunk「加载 → bar.sync → 计算 → bar.sync」串行，无双缓冲
-    （双缓冲需 2×47KB > 48KB 静态共享上限，不可行）；
-  - 1 block/SM（共享 47KB + 106 regs）→ 16 warps/SM 占用不足；
-  - 尝试 BK=16（2 blocks/SM，23.6KB 共享）：20.3ms 无改善（同步加倍抵消）；
-  - 尝试 BK=64：JIT 拒载（>48KB）；
-- **下一步候选**：加载循环 float4 向量化 + 减 div/mod；或动态共享
-  （`DynamicSharedArray` + launch sharedMemBytes 可 >48KB，需
-  cudaFuncSetAttribute opt-in）实现双缓冲；或把 K 分片块数加倍提高并行度。
+- **优化记录**（fc1 形状：M=256, N=784, K=384000，154 GFLOP）：
+  | 步骤 | 变更 | 时间/块 |
+  |---|---|---|
+  | 基线（cargo-oxide PTX，acc 静态化后） | — | 19.9ms |
+  | FMA 融合（llc `-fp-contract=fast`，99KB→62KB PTX） | 指令数减半 | 18.8ms（无改善）|
+  | E1：tx/ty 交织分解（原 `tx=tid%32` → A 读 stride 8 = 4-way bank 冲突；改 `tx=tid/16, ty=tid%16` → warp = 2 m 组 × 16 n 组，A 2 路多播、B stride 7 无冲突）| 1 处改动 | **12.3ms** |
+  | E2：加载循环除法提升（原每元素算 `row/rr` u32 软件除法 + 行偏移；改每线程加载同一 k 行内连续 16/7 元素 → 每平铺 1 次除法）| 加载循环重构 | **7.7ms** |
+  | OXIDE_KS 扫描：48→7.49 / 96→7.66 / 192→7.23 / 384→7.30 | 默认改 192 | **7.2ms** |
+- **同窗口 A/B（noise_bench）**：oxide 6.8-7.7ms vs cuBLAS 8.4-8.9ms → **oxide 快 ~19%**；
+  `accumulate_train` 默认路径已翻转为 `EINSUM=oxide`（`EINSUM=cublas` 可切回）；
+- 训练相位（ACC_PHASE=1，同窗口）：einsum 相位 oxide ≈ 10ms/epoch（layer0=6ms +
+  layer1/2=2ms）vs cuBLAS ≈ 11ms；epoch 同为 0.16s（此时 fwd 74ms 已是主瓶颈，
+  einsum 不再是热点）；正确性 `[0m] oxide_einsum_check` bad-by-m/n 全零；
+- 内核现状：512 线程 × 8×7 寄存器块（108 regs）、BK=32、split-K（grid.y=192）+
+  f32 原子输出、PTX 64.6KB 单 entry；
+- 遗留说明：FMA 融合单独无收益（指令数非瓶颈）；BK=64 仍受 48KB 静态共享上限
+  限制（若需双缓冲可走动态共享 + cudaFuncSetAttribute，当前非必要）。
 
 ---
 
 *更新日志：2026-08 分支建立，调研完成；阶段 A/B 完成（工具链打通 +
 PRNG 内核集成默认启用）；阶段 C-2 einsum 内核正确性完成（g_s stride 修复 +
-[0m] 校验 + 训练收敛一致），性能未达标保留 `EINSUM=oxide` 对照开关；后续每步更新。*
+[0m] 校验 + 训练收敛一致）；性能达标（E1 bank 冲突修复 + E2 除法提升 +
+KS=192 → 6.8-7.7ms < cuBLAS 8.4-8.9ms），**默认路径已翻转为 oxide**；
+下一步阶段 C-3：LIF 融合。*

@@ -829,9 +829,9 @@ fn main() {
                     let [half, r, a] = a_t.dims();
                     let [half2, r2, b] = b_t.dims();
                     assert_eq!((half, r), (half2, r2), "半 einsum 形状不匹配");
-                    // 默认 cuBLAS（性能最优）；EINSUM=oxide 用 cuda-oxide 融合内核
-                    //（正确性已验证，当前比 cuBLAS 慢 ~2×，见集成文档）；burn 为对照。
-                    let mode = std::env::var("EINSUM").unwrap_or_else(|_| "cublas".to_string());
+                    // 默认 cuda-oxide 融合内核（E1/E2 优化后同窗口 7.2ms < cuBLAS 8.6-8.9ms，
+                    // 见集成文档 §8）；EINSUM=cublas 切回 cuBLAS（TF32）；burn 为对照。
+                    let mode = std::env::var("EINSUM").unwrap_or_else(|_| "oxide".to_string());
                     match mode.as_str() {
                         "cublas" => {
                             // A'' 加权与拼接（与 lora_einsum_pair_half 相同）。
