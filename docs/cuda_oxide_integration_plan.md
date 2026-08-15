@@ -369,6 +369,21 @@ copy target\debug\deps\rustc_codegen_cuda.dll target\debug\librustc_codegen_cuda
 
 ---
 
+## 11. 阶段 C 收尾：C-5 batched matmul（可选项，暂缓）
+
+- 状态：**暂缓（可选）**。阶段 C-2（einsum）/C-3（LIF）/C-4（泊松）全部
+  完成并翻转默认；四项 oxide 校验（[0c4]/[0m]/[0d]/[0p]）全过。
+- 现状：epoch 0.14-0.15s（同窗口 A/B 稳定）；剩余热点为前向 matmul：
+  base GEMM [7b] = 1.92ms/chunk、cubecl batched matmul [10] = 4.18ms/chunk
+  （(6000,8,784)@(6000,784,64) 等，约 1.2 TFLOP/s）。
+- 暂缓理由：fp32 定制 GEMM 无张量核（cuda-oxide 目前不产出 MMA/PTX
+  mma 指令）难以大幅胜过 cubecl 已调优的 batched matmul；真正瓶颈解是
+  tensor core 路径（HFMA2/MMA），依赖 cuda-oxide 后续支持。如工具链
+  支持后重启，目标：`(n/2,T,in)@(n/2,in,r)` 与 `(n/2,T,r)@(n/2,r,a)`
+  两段 batched GEMM 融合为单内核（省 2×4ms/chunk + 中间张量）。
+
+---
+
 *更新日志：2026-08 分支建立，调研完成；阶段 A/B 完成（工具链打通 +
 PRNG 内核集成默认启用）；阶段 C-2 einsum 内核正确性完成（g_s stride 修复 +
 [0m] 校验 + 训练收敛一致）；性能达标（E1 bank 冲突修复 + E2 除法提升 +
@@ -376,4 +391,5 @@ KS=192 → 6.8-7.7ms < cuBLAS 8.4-8.9ms），**默认路径已翻转为 oxide**�
 阶段 C-3 LIF 融合完成（[0d] 逐位一致 + 0.89ms < 1.72ms + 训练 0.15s），
 **默认 LIF=oxide**；阶段 C-4 泊松融合完成（[0p] 统计等价 + 1.6ms < 2.4ms，
 踩平 LLVM RNG 误编译 + 行 pitch 两个隐蔽 bug），**默认 POISSON=oxide**；
-下一步阶段 C-5：可选 batched matmul 内核。*
+阶段 C-5 batched matmul 为可选项，暂缓（无张量核难胜 cubecl，待工具链
+支持 MMA 后重启）。**阶段 C 全部计划项处理完毕。**
