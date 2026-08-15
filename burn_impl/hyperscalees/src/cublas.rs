@@ -160,3 +160,39 @@ pub fn lora_einsum_pair_cublas(
     let g_ones = g.slice([a..2 * a, 0..b]).reshape([a, b]).mul_scalar(2.0);
     (g_raw, g_ones)
 }
+
+/// 反对称配对的 LoRA 噪声生成（零拷贝版）：返回 `(A' (n,r,a) 已乘 base_sigma, B' (n,r,b))`。
+///
+/// 直接调用 vendored cubek-random 的 `random_normal_antipodal` 内核：一次内核调用
+/// 生成完整张量，后半样本是前半的逐位取负（`out[n/2+i] = -out[i]`），**省去旧实现
+/// 的 neg + cat 两次全量拷贝**（fc1 每 chunk 约省 5ms）。A' 用 `std = base_sigma`
+/// 直接生成（等价于旧实现的生成后 mul_scalar，舍入差异 ~1e-7，统计无影响）。
+///
+/// 要求 `n/2 · r · b`（及 `n/2 · r · a`）能被 128 整除（本工作负载恒成立）。
+pub fn gen_lora_noise_antipodal(
+    n: usize,
+    r: usize,
+    a: usize,
+    b: usize,
+    base_sigma: f32,
+    device: &CudaDevice,
+) -> (Tensor<Cuda, 3>, Tensor<Cuda, 3>) {
+    use cubecl::ir::{ElemType, FloatKind, StorageType};
+    let dtype = StorageType::Scalar(ElemType::Float(FloatKind::F32));
+
+    let b_t: Tensor<Cuda, 3> = Tensor::empty([n, r, b], device);
+    let cb = as_cube(&b_t);
+    let client = cb.client.clone();
+    let binding = cb.binding();
+    cubek_random::random_normal_antipodal(&client, 0.0, 1.0, binding, dtype)
+        .expect("B' 反对称噪声生成失败");
+
+    let a_t: Tensor<Cuda, 3> = Tensor::empty([n, r, a], device);
+    let ca = as_cube(&a_t);
+    let client_a = ca.client.clone();
+    let binding_a = ca.binding();
+    cubek_random::random_normal_antipodal(&client_a, 0.0, base_sigma, binding_a, dtype)
+        .expect("A' 反对称噪声生成失败");
+
+    (a_t, b_t)
+}

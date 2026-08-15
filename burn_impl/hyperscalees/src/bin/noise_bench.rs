@@ -116,6 +116,39 @@ fn main() {
         let d_ones = maxd(o1, o2);
         println!("[0b] cublas_pair_einsum_check : raw={d_raw:.3e} ones={d_ones:.3e} (应 <1e-4)");
         assert!(d_raw < 1e-4 && d_ones < 1e-4, "cuBLAS 配对 einsum 数值错误");
+
+        // [0c] 反对称 prng 内核校验：B'[n/2+i] == -B'[i]，A' 同理（真实规模）。
+        let n_s = 16usize;
+        let r_s = 64usize;
+        let b_s = 64usize;
+        let (a_g, b_g) = hyperscalees::cublas::gen_lora_noise_antipodal(
+            n_s, r_s, 16, b_s, 0.25, &device,
+        );
+        let bv = b_g.into_data().into_vec::<f32>().unwrap();
+        let half = n_s / 2 * r_s * b_s;
+        let maxd = bv[..half]
+            .iter()
+            .zip(bv[half..].iter())
+            .map(|(x, y)| (x + y).abs())
+            .fold(0.0_f32, f32::max);
+        println!("[0c] antipodal_kernel_check  : max|B'[i]+B'[n/2+i]|={maxd:.3e} (应≈0)");
+        assert!(maxd < 1e-6, "B' 反对称结构错误");
+        let av = a_g.into_data().into_vec::<f32>().unwrap();
+        let half_a = n_s / 2 * r_s * 16;
+        let maxd2 = av[..half_a]
+            .iter()
+            .zip(av[half_a..].iter())
+            .map(|(x, y)| (x + y).abs())
+            .fold(0.0_f32, f32::max);
+        println!("[0c2] antipodal_A_check       : max|A'[i]+A'[n/2+i]|={maxd2:.3e} (应≈0)");
+        assert!(maxd2 < 1e-6, "A' 反对称结构错误");
+        // 前半应与直接 random_normal 同分布（均值/方差粗检）。
+        let mean = bv[..half].iter().sum::<f32>() / half as f32;
+        let var = bv[..half].iter().map(|x| x * x).sum::<f32>() / half as f32 - mean * mean;
+        println!(
+            "[0c3] antipodal_dist_check     : mean={mean:.3} var={var:.3} (应≈0, ≈1)"
+        );
+        assert!(mean.abs() < 0.1 && (var - 1.0).abs() < 0.2, "B' 前半分布异常");
     }
 
     let x: Tensor<B, 3> = Tensor::random([t, n, b], Distribution::Bernoulli(0.3), &device);

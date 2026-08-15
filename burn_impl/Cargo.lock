@@ -1321,8 +1321,6 @@ dependencies = [
 [[package]]
 name = "cubek-random"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8dfecce959bdbeb3b355120e586d1ea9e45a0fc7f2ca354f4260a571952551be"
 dependencies = [
  "cubecl",
  "cubecl-common",
@@ -2389,6 +2387,7 @@ dependencies = [
  "burn",
  "burn-cubecl",
  "cubecl",
+ "cubek-random",
  "cudarc",
  "hyperscalees-core",
  "hyperscalees-envs",

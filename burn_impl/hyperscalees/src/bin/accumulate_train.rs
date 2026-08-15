@@ -751,9 +751,20 @@ fn main() {
             // 每段独立泊松编码：(T, chunk, in)。
             let spikes_k = poisson_encode(imgs_k, cfg.t);
             // 该 chunk 每层（fc1/fc2/fc3 = dim_keys 前 3 项）的 GPU 噪声（前向与梯度共享）。
+            // GPU 构建走反对称配对内核（一次内核生成完整张量，省 neg+cat 拷贝）。
             let mut noises: Vec<(Tensor<B, 3>, Tensor<B, 3>)> = Vec::with_capacity(3);
             for (dims, _key) in dim_key_pairs.iter().take(3) {
                 let [a, b] = *dims;
+                #[cfg(feature = "gpu")]
+                let (a_t, b_t) = hyperscalees::cublas::gen_lora_noise_antipodal(
+                    chunk,
+                    cfg.rank,
+                    a,
+                    b,
+                    base_sigma,
+                    &device,
+                );
+                #[cfg(not(feature = "gpu"))]
                 let (a_t, b_t) = gen_gpu_lora_noise(base_sigma, cfg.rank, chunk, a, b, &device);
                 noises.push((a_t, b_t));
             }

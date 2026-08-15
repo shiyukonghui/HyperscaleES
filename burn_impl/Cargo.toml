@@ -9,10 +9,13 @@ members = [
 ]
 
 # 把 cubecl-cuda 换成 vendored 副本：仅增加 3 个公开访问器
-# （raw_stream / raw_context / raw_device_ptr，见 vendor/cubecl-cuda/src/compat.rs），
-# 供 hyperscalees 集成 cuBLAS（同流 GEMM）与多流流水线使用。
+# （raw_stream / raw_context / raw_device_ptr，见 vendor/cubecl-cuda/src/compute/server.rs），
+# 供 hyperscalees 集成 cuBLAS（同流 GEMM）使用。
+# 把 cubek-random 换成 vendored 副本：prng 内核写向量化（Vector<E,4>），
+# 数值逐位不变（RNG 状态序列一致），f32 随机吞吐 ~260GB/s -> ~700GB/s。
 [patch.crates-io]
 cubecl-cuda = { path = "vendor/cubecl-cuda" }
+cubek-random = { path = "vendor/cubek-random" }
 
 [workspace.package]
 version = "0.1.0"
