@@ -1,0 +1,3 @@
+# Temporary override: user-level ~/.cargo/config.toml sets a broken sccache wrapper.
+[build]
+rustc-wrapper = "F:/PythonProject/HyperscaleES/burn_impl/rustc-shim.cmd"
