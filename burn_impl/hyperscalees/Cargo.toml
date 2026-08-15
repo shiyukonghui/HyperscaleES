@@ -10,6 +10,13 @@ hyperscalees-core.workspace = true
 hyperscalees-noiser = { path = "../hyperscalees-noiser" }
 hyperscalees-models = { path = "../hyperscalees-models" }
 hyperscalees-envs = { path = "../hyperscalees-envs" }
+# cuBLAS 集成（einsum 同流 GEMM）与多流流水线所需：
+# - cubecl（cuda feature 与 burn-cuda 统一同一份 vendored cubecl-cuda）；
+# - cudarc 的 cublas 绑定（fallback-dynamic-loading 运行时加载 cublas64_xx.dll）；
+# - burn-cubecl 以取 CubeTensor 原始句柄。
+cubecl = { version = "0.10", features = ["cuda"], default-features = false }
+cudarc = { version = "0.19", features = ["cublas", "driver", "std", "fallback-dynamic-loading", "cuda-version-from-build-system", "fallback-latest"], default-features = false }
+burn-cubecl = { version = "0.21", default-features = false }
 
 [features]
 # GPU 训练：转发到 hyperscalees-core/gpu（burn-cuda / CubeCL CUDA 后端）。

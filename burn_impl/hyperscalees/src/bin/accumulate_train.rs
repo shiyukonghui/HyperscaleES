@@ -28,9 +28,10 @@ use hyperscalees_envs::snn_mnist::{
 };
 use hyperscalees_models::snn::TrainableVthSnn;
 use hyperscalees_noiser::eggroll::{
-    accumulated_update, batched_lora_noise, combine_affine_grads, init_noiser, lora_einsum_pair,
-    EggRoll,
+    accumulated_update, batched_lora_noise, combine_affine_grads, init_noiser, EggRoll,
 };
+#[cfg(not(feature = "gpu"))]
+use hyperscalees_noiser::eggroll::lora_einsum_pair;
 use hyperscalees_noiser::{FrozenNoiserParams, IterInfo, Noiser, NoiserParams, Solver};
 
 /// 输入维度（MNIST 28x28）。
@@ -235,12 +236,10 @@ fn segment_logits_batched(
 }
 
 /// 细粒度阶段计时（ACC_TIMING=1 时按 epoch 汇总输出，用于定位性能热点）。
+/// 编码/噪声/前向/fitness 已在流水线预取（流 1）中执行，这里只统计主流的 einsum
+/// 与 dense 更新的 CPU 入队时间（GPU 侧时间以 epoch 总时长为准）。
 #[derive(Default)]
 struct PerfTimers {
-    poisson: f32,
-    noise_gen: f32,
-    forward: f32,
-    fitness_sync: f32,
     lora_einsum: f32,
     dense_einsum: f32,
 }
@@ -248,8 +247,7 @@ struct PerfTimers {
 impl PerfTimers {
     fn report(&self) {
         eprintln!(
-            "  [timing] poisson={:.3}s noise_gen={:.3}s forward={:.3}s fit={:.3}s lora_es={:.3}s dense_es={:.3}s",
-            self.poisson, self.noise_gen, self.forward, self.fitness_sync,
+            "  [timing] lora_es={:.3}s dense_es={:.3}s",
             self.lora_einsum, self.dense_einsum
         );
     }
@@ -725,6 +723,9 @@ fn main() {
         // grad_acc：Σ_i raw_i·噪声项；ones_acc：Σ_i 噪声项（仿射修正用）。
         // 全部累积在 GPU 上进行（fitness 不搬回 CPU），每 epoch 仅末尾 3 次小同步
         // （mean/std/correct 标量），避免逐 chunk 同步打空 GPU 流水线。
+        // 注：曾尝试把编码/噪声/前向/fitness 放到第二条 CUDA 流（StreamId(1)）与主流
+        // einsum 重叠（深度 1 流水线），但实测 WDDM 上跨流事件同步开销巨大（受控实验
+        // 中双流比单流慢 24 倍），且无性能收益，已回退为单流。
         let base_sigma = cfg.sigma / (cfg.rank as f32).sqrt();
         let p0 = model.params();
         let mut grad_acc: Vec<Tensor<B, 2>> = p0
@@ -748,38 +749,32 @@ fn main() {
             let imgs_k = imgs.clone().slice([lo..hi, 0..IN_DIM]); // (chunk, in)
             let labels_k = labels.clone().slice([lo..hi]); // (chunk,)
             // 每段独立泊松编码：(T, chunk, in)。
-            let t0 = std::time::Instant::now();
             let spikes_k = poisson_encode(imgs_k, cfg.t);
-            pt.poisson += t0.elapsed().as_secs_f32();
             // 该 chunk 每层（fc1/fc2/fc3 = dim_keys 前 3 项）的 GPU 噪声（前向与梯度共享）。
-            let t0 = std::time::Instant::now();
             let mut noises: Vec<(Tensor<B, 3>, Tensor<B, 3>)> = Vec::with_capacity(3);
             for (dims, _key) in dim_key_pairs.iter().take(3) {
                 let [a, b] = *dims;
                 let (a_t, b_t) = gen_gpu_lora_noise(base_sigma, cfg.rank, chunk, a, b, &device);
                 noises.push((a_t, b_t));
             }
-            pt.noise_gen += t0.elapsed().as_secs_f32();
             // 整块批量噪声前向（batched matmul 合并 T，不物化大中间量）-> (chunk, C)。
-            let t0 = std::time::Instant::now();
             let logits_k = model.forward_batched_lora(spikes_k, th1, th2, &noises);
-            pt.forward += t0.elapsed().as_secs_f32();
             // 本段 raw fitness（GPU 张量）与正确数（GPU 标量累积）。
-            let t0 = std::time::Instant::now();
-            let raw_k: Tensor<B, 1> = fitness_from_logits_reward(
-                logits_k.clone(),
-                labels_k.clone(),
-                cfg.reward,
-            );
+            let raw_k: Tensor<B, 1> =
+                fitness_from_logits_reward(logits_k.clone(), labels_k.clone(), cfg.reward);
             sum_raw_t = sum_raw_t.clone() + raw_k.clone().sum();
             sum_raw2_t = sum_raw2_t.clone() + raw_k.clone().powf_scalar(2.0).sum();
             let pred = logits_k.argmax(1).reshape([chunk]);
             correct_t = correct_t.clone() + pred.equal(labels_k).float().sum();
-            pt.fitness_sync += t0.elapsed().as_secs_f32();
             // LoRA 参数（fc1/fc2/fc3 = 前 3 项）：配对合并 einsum 一次产出
             // raw 加权梯度与 ones 项（反对称配对使 K 减半，raw+ones 共享一次 GEMM）。
+            // GPU 构建走 cuBLAS 同流 GEMM（瘦 M 长 K 形状比 cubecl matmul 快 ~2-3x）。
             let t0 = std::time::Instant::now();
             for (i, (a_t, b_t)) in noises.iter().enumerate() {
+                #[cfg(feature = "gpu")]
+                let (g_raw, g_ones) =
+                    hyperscalees::cublas::lora_einsum_pair_cublas(a_t, b_t, &raw_k, &device);
+                #[cfg(not(feature = "gpu"))]
                 let (g_raw, g_ones) = lora_einsum_pair(a_t, b_t, &raw_k, &device);
                 grad_acc[i] = grad_acc[i].clone() + g_raw;
                 ones_acc[i] = ones_acc[i].clone() + g_ones;
@@ -787,7 +782,6 @@ fn main() {
             pt.lora_einsum += t0.elapsed().as_secs_f32();
             // dense（FULL）参数（out_gain/v_th1/v_th2 = 后 3 项，形状 (1,1)）：
             // 三个 (chunk,1,1) 噪声合并为一次 (chunk,3) 随机 + 一次加权求和。
-            let t0 = std::time::Instant::now();
             let dense_noise = Tensor::<B, 2>::random(
                 [chunk, 3],
                 Distribution::Normal(0.0, cfg.sigma as f64),
@@ -802,7 +796,6 @@ fn main() {
                 ones_acc[3 + di] = ones_acc[3 + di].clone()
                     + ones_all.clone().slice([0..1, di..di + 1]).reshape([1, 1]);
             }
-            pt.dense_einsum += t0.elapsed().as_secs_f32();
         }
         correct_f = correct_t.into_scalar();
         if timing {

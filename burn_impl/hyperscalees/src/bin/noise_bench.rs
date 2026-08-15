@@ -68,6 +68,56 @@ fn main() {
     let device = Device::<B>::default();
     println!("n={n} b={b} a={a} r={r} T={t} iters={iters} backend=cuda");
 
+    // ---- 0. cuBLAS 集成正确性校验（列主序映射容易出错，先验证数学等价）----
+    #[cfg(feature = "gpu")]
+    {
+        // 确定性小矩阵：A (k=2, m=3), B (k=2, n=2)。
+        let am: Tensor<B, 2> = Tensor::from_data(
+            [[1.0_f32, 2.0, 3.0], [4.0, 5.0, 6.0]],
+            &device,
+        ); // (2, 3)
+        let bm: Tensor<B, 2> =
+            Tensor::from_data([[7.0_f32, 8.0], [9.0, 10.0]], &device); // (2, 2)
+        let c_ref = am.clone().transpose().matmul(bm.clone());
+        let c_cu = hyperscalees::cublas::gemm_atb(&am, &bm, &device);
+        let va = c_ref.into_data().into_vec::<f32>().unwrap();
+        let vb = c_cu.into_data().into_vec::<f32>().unwrap();
+        let maxd = va
+            .iter()
+            .zip(vb.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max);
+        println!("[0a] cublas_gemm_check        : ref={va:?} cu={vb:?} maxdiff={maxd:.3e}");
+        assert!(maxd < 1e-4, "cuBLAS gemm 数值错误");
+
+        // lora_einsum_pair_cublas vs 通用 lora_einsum_pair（相同反对称输入）。
+        let n_s = 8usize;
+        let r_s = 3usize;
+        let a_s = 2usize;
+        let b_s = 3usize;
+        let a_half: Tensor<B, 3> =
+            Tensor::random([n_s / 2, r_s, a_s], Distribution::Normal(0.0, 1.0), &device);
+        let b_half: Tensor<B, 3> =
+            Tensor::random([n_s / 2, r_s, b_s], Distribution::Normal(0.0, 1.0), &device);
+        let a_t = Tensor::cat(vec![a_half.clone(), a_half.neg()], 0);
+        let b_t = Tensor::cat(vec![b_half.clone(), b_half.neg()], 0);
+        let scores: Tensor<B, 1> = Tensor::random([n_s], Distribution::Normal(0.0, 1.0), &device);
+        let (g1, o1) = hyperscalees_noiser::eggroll::lora_einsum_pair(&a_t, &b_t, &scores, &device);
+        let (g2, o2) = hyperscalees::cublas::lora_einsum_pair_cublas(&a_t, &b_t, &scores, &device);
+        let maxd = |x: Tensor<B, 2>, y: Tensor<B, 2>| {
+            let vx = x.into_data().into_vec::<f32>().unwrap();
+            let vy = y.into_data().into_vec::<f32>().unwrap();
+            vx.iter()
+                .zip(vy.iter())
+                .map(|(u, v)| (u - v).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        let d_raw = maxd(g1, g2);
+        let d_ones = maxd(o1, o2);
+        println!("[0b] cublas_pair_einsum_check : raw={d_raw:.3e} ones={d_ones:.3e} (应 <1e-4)");
+        assert!(d_raw < 1e-4 && d_ones < 1e-4, "cuBLAS 配对 einsum 数值错误");
+    }
+
     let x: Tensor<B, 3> = Tensor::random([t, n, b], Distribution::Bernoulli(0.3), &device);
     let w: Tensor<B, 2> = Tensor::random([a, b], Distribution::Normal(0.0, 0.1), &device);
     let x2: Tensor<B, 2> = Tensor::random([n, b], Distribution::Bernoulli(0.3), &device);
@@ -211,6 +261,56 @@ fn main() {
         a_flat.transpose().matmul(b_flat).mean()
     });
     println!("[4f] einsum_pair_contig      : {cur:8.2} ms/chunk");
+
+    // ---- 4k. cuBLAS 配对 einsum（训练热路径实际使用的实现）----
+    #[cfg(feature = "gpu")]
+    {
+        let cur = time_ms(true, iters, || {
+            let half = n / 2;
+            let a_half = a_ra.clone().slice([0..half, 0..r, 0..a]);
+            let b_half = b_rab.clone().slice([0..half, 0..r, 0..b]);
+            let f_pair = scores_t
+                .clone()
+                .slice([0..half])
+                .add(scores_t.clone().slice([half..n]));
+            let a_w = a_half.clone() * f_pair.reshape([half, 1, 1]);
+            let a_stack = Tensor::cat(vec![a_w, a_half], 2);
+            let a_flat = a_stack.reshape([half * r, 2 * a]);
+            let b_flat = b_half.reshape([half * r, b]);
+            let (g1, g2) =
+                hyperscalees::cublas::lora_einsum_pair_cublas(&a_ra, &b_rab, &scores_t, &device);
+            (g1 + g2).mean()
+        });
+        println!("[4k] einsum_pair_cublas     : {cur:8.2} ms/chunk");
+
+    // ---- 4l. 纯 cuBLAS gemm（无 prep）：(2a, half*r)@(half*r, b) ----
+    #[cfg(feature = "gpu")]
+    {
+        let half = n / 2;
+        let a_flat2: Tensor<B, 2> = a_ra
+            .clone()
+            .slice([0..half, 0..r, 0..a])
+            .reshape([half * r, a])
+            .transpose()
+            .reshape([half * r, a])
+            .transpose();
+        let _ = a_flat2; // 占位避免未使用
+        let cur = time_ms(true, iters, || {
+            let a_m: Tensor<B, 2> = a_ra
+                .clone()
+                .slice([0..half, 0..r, 0..a])
+                .reshape([half * r, a]);
+            let b_m: Tensor<B, 2> = b_rab
+                .clone()
+                .slice([0..half, 0..r, 0..b])
+                .reshape([half * r, b]);
+            let c1 = hyperscalees::cublas::gemm_atb(&a_m, &b_m, &device);
+            let c2 = hyperscalees::cublas::gemm_atb(&a_m, &b_m, &device);
+            (c1 + c2).mean()
+        });
+        println!("[4l] gemm_atb_pure_x2      : {cur:8.2} ms/chunk (2 次 gemm)");
+    }
+    }
 
     // ---- 4h. raw_halfk 形状：(128, 384000)@(384000, 784)，转置 lhs 视图 ----
     let cur = time_ms(true, iters, || {
@@ -392,4 +492,61 @@ fn main() {
     acc3.mean().into_scalar();
     let per_op_ms = t0.elapsed().as_secs_f64() * 1000.0 / 500.0;
     println!("[13] enqueue_random          : {per_op_ms:8.4} ms/op (CPU 入队)");
+
+    // ---- 14. 多流重叠测试：S0/S1 各 50 次 GEMM，单流 vs 双流 ----
+    let t0 = Instant::now();
+    let mut a1 = small.clone();
+    for _ in 0..50 {
+        a1 = a1.clone().matmul(w64.clone());
+    }
+    a1.mean().into_scalar();
+    let single = t0.elapsed().as_secs_f64();
+    let t0 = Instant::now();
+    let s1 = cubecl::stream_id::StreamId { value: 1 };
+    let f = s1.executes(|| {
+        let mut a2 = small.clone();
+        for _ in 0..50 {
+            a2 = a2.clone().matmul(w64.clone());
+        }
+        a2
+    });
+    let mut a0 = small.clone();
+    for _ in 0..50 {
+        a0 = a0.clone().matmul(w64.clone());
+    }
+    let r14 = (a0 + f).mean().into_scalar();
+    let dual = t0.elapsed().as_secs_f64();
+    println!(
+        "[14] stream_overlap          : single={single:.3}s dual={dual:.3}s (dual≈single 无重叠；≈single/2 有重叠)"
+    );
+
+    // ---- 15. 真实负载多流测试：每流做一次 3 层噪声生成（≈一次 prefetch 的 GPU 量）----
+    let do_gen = |dev: &Device<B>| {
+        let mut acc: Tensor<B, 1> = Tensor::zeros([1], dev);
+        for (aa, bb) in [(a, b), (128usize, 128usize), (10usize, 128usize)] {
+            let half = n / 2;
+            let b_even: Tensor<B, 3> =
+                Tensor::random([half, r, bb], Distribution::Normal(0.0, 1.0), dev);
+            let b_t = Tensor::cat(vec![b_even.clone(), b_even.neg()], 0);
+            let a_even: Tensor<B, 3> =
+                Tensor::random([half, r, aa], Distribution::Normal(0.0, 1.0), dev);
+            let a_t = Tensor::cat(vec![a_even.clone(), a_even.neg()], 0).mul_scalar(0.025);
+            acc = acc.clone() + b_t.sum_dim(1).squeeze_dim::<2>(1).sum();
+            acc = acc.clone() + a_t.sum_dim(1).squeeze_dim::<2>(1).sum();
+        }
+        acc
+    };
+    let t0 = Instant::now();
+    let r1 = do_gen(&device);
+    let r2 = do_gen(&device);
+    (r1 + r2).into_scalar();
+    let seq = t0.elapsed().as_secs_f64();
+    let t0 = Instant::now();
+    let f = s1.executes(|| do_gen(&device));
+    let r0 = do_gen(&device);
+    (r0 + f).into_scalar();
+    let par = t0.elapsed().as_secs_f64();
+    println!(
+        "[15] gen_real_overlap        : seq={seq:.3}s par={par:.3}s (par≈seq 无重叠；≈seq/2 有重叠)"
+    );
 }

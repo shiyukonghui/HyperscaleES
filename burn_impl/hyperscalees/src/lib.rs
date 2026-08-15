@@ -7,4 +7,8 @@
 
 pub mod snn_mnist_train;
 
+/// cuBLAS 集成（einsum 同流 GEMM，仅 GPU feature 编译）。
+#[cfg(feature = "gpu")]
+pub mod cublas;
+
 pub use hyperscalees_core::B;
