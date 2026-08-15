@@ -180,6 +180,157 @@ fn main() {
             "cuda-oxide PRNG 分布异常"
         );
 
+        // [0m] cuda-oxide einsum 内核校验：einsum_pair_fused vs burn fp32 参考
+        //（lora_einsum_pair_half 同款计算序列：f_pair 加权 + cat 拼接 + matmul），
+        // 容差相对 1e-3（fp32 累加顺序差异；布局/配对错误给出 O(1) 级误差）。
+        let n_e = 2000usize; // K = 1000·16 = 16000
+        let r_e = 16usize;
+        let a_e = 32usize;
+        let b_e = 48usize; // 48 有 pitch（burn 256B 对齐 → 行 stride 64）
+        let half_e = n_e / 2;
+        // 数据隔离实验：与示例完全一致的确定性均匀数据（从 CPU 上传）
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let fill = |len: usize, scale: f32, s: &mut u64| -> Vec<f32> {
+            let mut v = vec![0.0f32; len];
+            for x in v.iter_mut() {
+                *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let u = ((*s >> 33) as u32 as f64) / (1u64 << 31) as f64 - 1.0;
+                *x = (u as f32) * scale;
+            }
+            v
+        };
+        let a_h: Tensor<B, 3> = Tensor::from_data(
+            burn::tensor::TensorData::new(fill(half_e * r_e * a_e, 1.0, &mut seed), [half_e, r_e, a_e].to_vec()),
+            &device,
+        );
+        let b_h: Tensor<B, 3> = Tensor::from_data(
+            burn::tensor::TensorData::new(fill(half_e * r_e * b_e, 1.0, &mut seed), [half_e, r_e, b_e].to_vec()),
+            &device,
+        );
+        let scores_e: Tensor<B, 1> = Tensor::from_data(
+            burn::tensor::TensorData::new(fill(n_e, 1.0, &mut seed), [n_e].to_vec()),
+            &device,
+        );
+        let f_pair = scores_e
+            .clone()
+            .slice([0..half_e])
+            .add(scores_e.clone().slice([half_e..n_e]));
+        let a_w = a_h.clone() * f_pair.reshape([half_e, 1, 1]);
+        let a_stack = Tensor::cat(vec![a_w, a_h.clone()], 2).reshape([half_e * r_e, 2 * a_e]);
+        let b_flat = b_h.clone().reshape([half_e * r_e, b_e]);
+        let g_ref = a_stack.transpose().matmul(b_flat); // (2a, b)
+        let g_raw_ref = g_ref.clone().slice([0..a_e, 0..b_e]).reshape([a_e, b_e]);
+        let g_ones_ref = g_ref.slice([a_e..2 * a_e, 0..b_e]).reshape([a_e, b_e]).mul_scalar(2.0);
+        let (o_raw, o_ones) =
+            hyperscalees::oxide::einsum_pair_fused(&a_h, &b_h, &scores_e, &device).unwrap();
+        // 对照：cuBLAS 版（全量反对称构造 → 半量配对等价）
+        let a_full = Tensor::cat(vec![a_h.clone(), a_h.clone().neg()], 0); // (n, r, a)
+        let b_full = Tensor::cat(vec![b_h.clone(), b_h.clone().neg()], 0); // (n, r, b)
+        let (c_raw, c_ones) =
+            hyperscalees::cublas::lora_einsum_pair_cublas(&a_full, &b_full, &scores_e, &device);
+        let maxd = |x: Tensor<B, 2>, y: Tensor<B, 2>| {
+            x.into_data()
+                .into_vec::<f32>()
+                .unwrap()
+                .iter()
+                .zip(y.into_data().into_vec::<f32>().unwrap().iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        let d_oc_raw = maxd(o_raw.clone(), c_raw.clone());
+        let d_oc_ones = maxd(o_ones.clone(), c_ones.clone());
+        let d_om_raw = maxd(o_raw.clone(), g_raw_ref.clone());
+        let d_om_ones = maxd(o_ones.clone(), g_ones_ref.clone());
+        let d_cm_raw = maxd(c_raw.clone(), g_raw_ref.clone());
+        let d_cm_ones = maxd(c_ones.clone(), g_ones_ref.clone());
+        let scale_om = maxd(g_raw_ref.clone(), Tensor::<B, 2>::zeros([a_e, b_e], &device)) + 1.0;
+        println!(
+            "[0m] oxide_einsum_check       : raw={d_om_raw:.3e} ones={d_om_ones:.3e} (应 <{:.1e})",
+            scale_om * 1e-3
+        );
+        println!(
+            "[0m]  oxide-vs-cublas         : raw={d_oc_raw:.3e} ones={d_oc_ones:.3e} | cublas-vs-ref: raw={d_cm_raw:.3e} ones={d_cm_ones:.3e}"
+        );
+        {
+            let ov = o_raw.into_data().into_vec::<f32>().unwrap();
+            let rv = g_raw_ref.into_data().into_vec::<f32>().unwrap();
+            for i in 0..8 {
+                println!("[0m]   elem[{i}]: oxide={:.3} ref={:.3}", ov[i], rv[i]);
+            }
+            // m=1 行前 4 个 + m=31 行前 4 个
+            for m in [1usize, 31] {
+                for n in 0..4 {
+                    let i = m * b_e + n;
+                    println!(
+                        "[0m]   (m={m},n={n}): oxide={:.3} ref={:.3}",
+                        ov[i], rv[i]
+                    );
+                }
+            }
+            // 错位假设检查：oxide[m=1] vs ref[其他 m]
+            for (mm, label) in [(1usize, "m=1"), (17, "m=17"), (9, "m=9"), (25, "m=25")] {
+                println!(
+                    "[0m]   ref[{label},n=0] = {:.3}  (oxide[m=1,n=0] = {:.3})",
+                    rv[mm * b_e],
+                    ov[1 * b_e]
+                );
+            }
+            let mut bad_m = vec![0usize; a_e];
+            for (i, (a, b)) in ov.iter().zip(rv.iter()).enumerate() {
+                if (a - b).abs() > 1.0 {
+                    bad_m[i / b_e] += 1;
+                }
+            }
+            println!("[0m]   bad-by-m: {bad_m:?}");
+            // ones 输出前 4 个（m=0..3, n=0）
+            {
+                let ov2 = o_ones.into_data().into_vec::<f32>().unwrap();
+                let rv2 = g_ones_ref.into_data().into_vec::<f32>().unwrap();
+                for m in 0..4 {
+                    println!(
+                        "[0m]   ones(m={m},n=0): oxide={:.3} ref={:.3}",
+                        ov2[m * b_e],
+                        rv2[m * b_e]
+                    );
+                }
+            }
+            // 打印最大偏差的位置（m, n）与值
+            let mut worst = (0usize, 0.0f32);
+            for (i, (a, b)) in ov.iter().zip(rv.iter()).enumerate() {
+                let d = (a - b).abs();
+                if d > worst.1 {
+                    worst = (i, d);
+                }
+            }
+            println!(
+                "[0m]   worst: idx={} (m={}, n={}) oxide={:.3} ref={:.3}",
+                worst.0,
+                worst.0 / b_e,
+                worst.0 % b_e,
+                ov[worst.0],
+                rv[worst.0]
+            );
+            // 统计错元素分布：按 n 列计数
+            let mut bad_n = vec![0usize; b_e];
+            for (i, (a, b)) in ov.iter().zip(rv.iter()).enumerate() {
+                if (a - b).abs() > 1.0 {
+                    bad_n[i % b_e] += 1;
+                }
+            }
+            println!("[0m]   bad-by-n: {bad_n:?}");
+            let mut bad_m = vec![0usize; a_e];
+            for (i, (a, b)) in ov.iter().zip(rv.iter()).enumerate() {
+                if (a - b).abs() > 1.0 {
+                    bad_m[i / b_e] += 1;
+                }
+            }
+            println!("[0m]   bad-by-m: {bad_m:?}");
+        }
+        assert!(
+            d_om_raw < scale_om * 1e-3 && d_om_ones < scale_om * 1e-3,
+            "cuda-oxide einsum 数值错误"
+        );
+
         // [0e] 通用 gemm 帮助函数校验（容差 1e-1：burn 侧该形状启用 TF32，cuBLAS 为
         // 纯 fp32，差异 ~2.5e-4 相对值；转置/布局错误会给出 O(1) 误差仍能抓住）。
         let m0 = 12usize;
@@ -477,6 +628,17 @@ fn main() {
             (c1 + c2).mean()
         });
         println!("[4l] gemm_atb_pure_x2      : {cur:8.2} ms/chunk (2 次 gemm)");
+
+        // ---- 4m. cuda-oxide 融合配对 einsum（训练热路径候选）----
+        let (a_h4, b_h4) = hyperscalees::cublas::gen_lora_noise_antipodal(
+            n, r, a, b, 0.025, &device,
+        );
+        let cur = time_ms(true, iters, || {
+            let (g1, g2) =
+                hyperscalees::oxide::einsum_pair_fused(&a_h4, &b_h4, &scores_t, &device).unwrap();
+            (g1 + g2).mean()
+        });
+        println!("[4m] einsum_pair_oxide     : {cur:8.2} ms/chunk");
     }
     }
 

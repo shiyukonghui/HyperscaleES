@@ -818,37 +818,53 @@ fn main() {
             pt.fitness += t0.elapsed().as_secs_f32();
             // LoRA 参数（fc1/fc2/fc3 = 前 3 项）：配对合并 einsum 一次产出
             // raw 加权梯度与 ones 项（反对称配对使 K 减半，raw+ones 共享一次 GEMM）。
-            // GPU 构建走 cuBLAS 同流 GEMM（瘦 M 长 K 形状比 cubecl matmul 快 ~2-3x）。
+            // 默认走 cuda-oxide 融合内核（配对加权/拼接融合进共享加载，A/B 各读一遍）；
+            // EINSUM=cublas 切回 cuBLAS（TF32）、EINSUM=burn 切回 cubecl matmul。
             let t0 = std::time::Instant::now();
             for (i, (a_t, b_t)) in noises.iter().enumerate() {
                 // 半噪声配对合并 einsum（配对隐含，噪声只存前半）。
-                // GPU：自定义 K 分片内核（K=half·r 巨大、输出瘦小，burn matmul /
-                // cuBLAS 在此形状均差）；非 GPU 走 burn 通用实现。
                 let t_l = std::time::Instant::now();
                 #[cfg(feature = "gpu")]
                 let (g_raw, g_ones) = {
                     let [half, r, a] = a_t.dims();
                     let [half2, r2, b] = b_t.dims();
                     assert_eq!((half, r), (half2, r2), "半 einsum 形状不匹配");
-                    // A'' 加权与拼接（与 lora_einsum_pair_half 相同）。
-                    let f_pair = raw_k
-                        .clone()
-                        .slice([0..half])
-                        .add(raw_k.clone().slice([half..chunk])); // (half,)
-                    let a_w = a_t.clone() * f_pair.reshape([half, 1, 1]); // (half, r, a)
-                    let a_stack = Tensor::cat(vec![a_w, a_t.clone()], 2); // (half, r, 2a)
-                    let a_flat = a_stack.reshape([half * r, 2 * a]); // (K, 2a) 连续
-                    let b_flat = b_t.clone().reshape([half * r, b]); // (K, b) 连续
-                    // einsum GEMM：默认 cuBLAS（瘦 M 长 K 形状同流 GEMM，A/B 实测
-                    // 0.16s vs burn 0.22s/epoch）；EINSUM=burn 可切回 burn matmul。
-                    let mode = std::env::var("EINSUM").unwrap_or_default();
-                    let g = match mode.as_str() {
-                        "burn" => a_flat.transpose().matmul(b_flat),
-                        _ => hyperscalees::cublas::gemm_atb(&a_flat, &b_flat, &device),
-                    }; // (2a, b)
-                    let g_raw = g.clone().slice([0..a, 0..b]).reshape([a, b]);
-                    let g_ones = g.slice([a..2 * a, 0..b]).reshape([a, b]).mul_scalar(2.0);
-                    (g_raw, g_ones)
+                    // 默认 cuBLAS（性能最优）；EINSUM=oxide 用 cuda-oxide 融合内核
+                    //（正确性已验证，当前比 cuBLAS 慢 ~2×，见集成文档）；burn 为对照。
+                    let mode = std::env::var("EINSUM").unwrap_or_else(|_| "cublas".to_string());
+                    match mode.as_str() {
+                        "cublas" => {
+                            // A'' 加权与拼接（与 lora_einsum_pair_half 相同）。
+                            let f_pair = raw_k
+                                .clone()
+                                .slice([0..half])
+                                .add(raw_k.clone().slice([half..chunk])); // (half,)
+                            let a_w = a_t.clone() * f_pair.reshape([half, 1, 1]); // (half, r, a)
+                            let a_stack = Tensor::cat(vec![a_w, a_t.clone()], 2); // (half, r, 2a)
+                            let a_flat = a_stack.reshape([half * r, 2 * a]); // (K, 2a) 连续
+                            let b_flat = b_t.clone().reshape([half * r, b]); // (K, b) 连续
+                            let g = hyperscalees::cublas::gemm_atb(&a_flat, &b_flat, &device);
+                            let g_raw = g.clone().slice([0..a, 0..b]).reshape([a, b]);
+                            let g_ones = g.slice([a..2 * a, 0..b]).reshape([a, b]).mul_scalar(2.0);
+                            (g_raw, g_ones)
+                        }
+                        "burn" => {
+                            let f_pair = raw_k
+                                .clone()
+                                .slice([0..half])
+                                .add(raw_k.clone().slice([half..chunk])); // (half,)
+                            let a_w = a_t.clone() * f_pair.reshape([half, 1, 1]); // (half, r, a)
+                            let a_stack = Tensor::cat(vec![a_w, a_t.clone()], 2); // (half, r, 2a)
+                            let a_flat = a_stack.reshape([half * r, 2 * a]); // (K, 2a) 连续
+                            let b_flat = b_t.clone().reshape([half * r, b]); // (K, b) 连续
+                            let g = a_flat.transpose().matmul(b_flat); // (2a, b)
+                            let g_raw = g.clone().slice([0..a, 0..b]).reshape([a, b]);
+                            let g_ones = g.slice([a..2 * a, 0..b]).reshape([a, b]).mul_scalar(2.0);
+                            (g_raw, g_ones)
+                        }
+                        _ => hyperscalees::oxide::einsum_pair_fused(a_t, b_t, &raw_k, &device)
+                            .expect("cuda-oxide einsum 失败"),
+                    }
                 };
                 #[cfg(not(feature = "gpu"))]
                 let (g_raw, g_ones) = lora_einsum_pair(a_t, b_t, &raw_k, &device);

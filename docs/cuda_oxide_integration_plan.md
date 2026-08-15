@@ -137,7 +137,7 @@ v0.1.0 / v0.2.0 社区版已发布）是一个 **Rust-to-CUDA 编译器**：
 | 优先级 | 内核 | 当前成本 | 状态 |
 |---|---|---|---|
 | 1 | 噪声生成（半量） | ~19ms/epoch | ✅ 完成（向量化写 + MUFU，≥ 现状） |
-| 2 | einsum 合并 GEMM（瘦 M 长 K） | ~50ms/epoch（cuBLAS TF32） | ⬜ 待做：定制分块（共享内存 + 寄存器块，K 分片部分和），目标 > cuBLAS |
+| 2 | einsum 合并 GEMM（瘦 M 长 K） | ~50ms/epoch（cuBLAS TF32） | 🟡 **正确性完成、性能未达标**：融合配对/拼接的 split-K 共享分块内核（512 线程 × 8×7 寄存器块，原子累加输出，g_s 输出 stride 支持 burn 256B pitch）；`[0m]` 校验通过、训练收敛一致；但 18.1ms/step vs cuBLAS 8.6ms（~86GB/s，占用率/加载延迟受限，见 §8 分析）。默认路径保持 cuBLAS，`EINSUM=oxide` 切换 |
 | 3 | LIF 融合 | ~8ms/epoch | ⬜ 待做：8 步 LIF 融合为 1-2 内核 |
 | 4 | 泊松编码融合 | ~9ms/epoch | ⬜ 待做：Uniform+比较 1 内核 |
 | 5 | 半前向 batched matmul | ~45ms/epoch（burn） | ⬜ 待做（谨慎：burn 已优于 cuBLAS，需分块设计） |
@@ -147,8 +147,8 @@ v0.1.0 / v0.2.0 社区版已发布）是一个 **Rust-to-CUDA 编译器**：
 
 ### 阶段 D：收尾
 
-- 失败的尝试保留记录；保留 `EINSUM=burn` / `EINSUM_FP32=1` / `GEN_CUBEK=1`
-  等对照开关；
+- 失败的尝试保留记录；保留 `EINSUM=burn` / `EINSUM=cublas` / `EINSUM=oxide` /
+  `EINSUM_FP32=1` / `GEN_CUBEK=1` 等对照开关；
 - 更新 `docs/snn_es_burn_gpu_optimization.md` 的架构表与优化历程。
 
 ---
@@ -158,14 +158,24 @@ v0.1.0 / v0.2.0 社区版已发布）是一个 **Rust-to-CUDA 编译器**：
 - `burn_impl/hyperscalees-kernels/`：内核 crate 骨架；
 - `burn_impl/hyperscalees-kernels/ptx/prng_normal_half.ptx`：cuda-oxide 编译
   出的 PRNG 内核 PTX（17.7KB，`include_str!` 嵌入宿主）；
+- `burn_impl/hyperscalees-kernels/ptx/einsum_pair_fused.ptx`：einsum 融合内核
+  PTX（~99KB，3 个 entry：主内核 + 2 个 dump 诊断内核）；
+- `burn_impl/hyperscalees-kernels/src/einsum_pair_fused_oxide.rs`：einsum 内核
+  源码归档（从 cuda-oxide 示例复制，含完整验证 host 代码）；
 - `burn_impl/hyperscalees/src/oxide.rs`：`load_kernel` / `launch` /
-  `launch_on_stream` / `kernel_function` / `prng_normal_half`（默认噪声路径）；
+  `launch_on_stream` / `kernel_function` / `prng_normal_half`（默认噪声路径）/
+  `einsum_pair_fused`（EINSUM=oxide 路径，g_s 输出 stride 参数）+
+  `einsum_dump`/`einsum_dump_acc`（调试封装）；
 - `burn_impl/hyperscalees/src/cublas.rs`：`gen_lora_noise_antipodal` 默认
   走 oxide 内核（`GEN_CUBEK=1` 回退）；
-- `burn_impl/hyperscalees/src/bin/noise_bench.rs`：`[0c4] oxide_prng_check`；
+- `burn_impl/hyperscalees/src/bin/noise_bench.rs`：`[0c4] oxide_prng_check` +
+  `[0m] oxide_einsum_check`（vs burn fp32 参考 + vs cuBLAS 三方对比）+
+  `[4m] einsum_pair_oxide` 计时；
+- `burn_impl/hyperscalees/src/bin/accumulate_train.rs`：`EINSUM=oxide|cublas|burn`
+  三路 einsum 开关（默认 cublas）；
 - `burn_impl/hyperscalees/src/bin/oxide_probe.rs`：调试用探测 bin
   （vecadd 3 流测试 / prng empty/zeros / manual vs oxide launch），保留备查；
-- 内核源码：`cuda-oxide-0.2.1/.../crates/rustc-codegen-cuda/examples/snn_prng/`。
+- 内核源码：`cuda-oxide-0.2.1/.../crates/rustc-codegen-cuda/examples/snn_einsum/`。
 
 ---
 
@@ -242,5 +252,44 @@ copy target\debug\deps\rustc_codegen_cuda.dll target\debug\librustc_codegen_cuda
 
 ---
 
+## 8. einsum 内核：调试记录与性能分析（阶段 C-2）
+
+### 8.1 集成踩坑（全部已解决）
+
+1. **数组累加器必须全静态索引**：`acc[dm·7+dn]` 若含运行时索引 → LLVM 把
+   `acc` 放进 local memory（`__local_depot0[448]`，167ms！）。用 `macro_rules`
+   按 dm/dn 字面量完全展开 → SROA 提升到寄存器（19.9ms）；
+2. **循环内常量索引会被提升**：原子段写成 `for dm { if m2 < m2max { 全部 16 组
+   atomic } }` 时，编译器把 `acc[0]` 读提升到循环外 → 每个 dm 迭代都写 acc[0] 的
+   值 → 只有 m2max=16 的巧合形状正确（a=8）。必须每个 dm 组独立展开（m2 显式）；
+3. **burn 输出张量有 256B pitch**：`(a, b)` 的 row stride 可能是 64（b=48 时）
+   ≠ b。内核按 `m2·b + n` 写原子 → 行错位（m=0 恰好对、m≥1 错、末行全 0）。
+   修复：内核加 `g_s`（输出行 stride）参数，地址用 `m2·g_s + n`；
+4. **dump 诊断内核**：dump 内核与主内核共享加载代码但各自独立验证——证明
+   「加载正确、FMA 正确、原子段错误」的关键工具（[acc] bad=0/3584 而主内核错）；
+5. **PTX 只取 cargo-oxide 写出的 `snn_einsum.ptx`**（= 嵌入 payload，119KB+），
+   不要手工从 exe 提取（嵌入 blob 含 NUL/二进制字节，加载失败或截断）；
+6. **静态共享 >48KB 会被驱动拒载**（JIT 编译失败，BK=64 的 94.5KB 即如此）；
+   BK=32 的 47KB 是安全上限附近。
+
+### 8.2 性能现状（不达标，保留对照）
+
+- `[4m] einsum_pair_oxide` = 18.1ms vs `[4k] einsum_pair_cublas` = 8.6ms
+  （fc1 形状：M=256, N=784, K=384000，154 GFLOP → 8.5 TFLOP/s vs 18 TFLOP/s）；
+- 训练同窗口 A/B：oxide einsum=0.146s/epoch vs cuBLAS 0.061s（epoch 0.25 vs 0.17）；
+- 内核：512 线程 × 8×7 寄存器块（106 regs）、BK=32、split-K × 原子输出；
+- 流量 1.60GB/18ms ≈ 86GB/s（RTX 4090 ~1TB/s）→ 加载延迟暴露为主因：
+  - 每 chunk「加载 → bar.sync → 计算 → bar.sync」串行，无双缓冲
+    （双缓冲需 2×47KB > 48KB 静态共享上限，不可行）；
+  - 1 block/SM（共享 47KB + 106 regs）→ 16 warps/SM 占用不足；
+  - 尝试 BK=16（2 blocks/SM，23.6KB 共享）：20.3ms 无改善（同步加倍抵消）；
+  - 尝试 BK=64：JIT 拒载（>48KB）；
+- **下一步候选**：加载循环 float4 向量化 + 减 div/mod；或动态共享
+  （`DynamicSharedArray` + launch sharedMemBytes 可 >48KB，需
+  cudaFuncSetAttribute opt-in）实现双缓冲；或把 K 分片块数加倍提高并行度。
+
+---
+
 *更新日志：2026-08 分支建立，调研完成；阶段 A/B 完成（工具链打通 +
-PRNG 内核集成默认启用）；后续每步更新。*
+PRNG 内核集成默认启用）；阶段 C-2 einsum 内核正确性完成（g_s stride 修复 +
+[0m] 校验 + 训练收敛一致），性能未达标保留 `EINSUM=oxide` 对照开关；后续每步更新。*
