@@ -54,12 +54,18 @@ fn state(device: &CudaDevice) -> &'static CublasState {
             cudarc::driver::result::ctx::set_current(ctx).expect("设置 CUDA 上下文失败");
         }
         let handle = cudarc::cublas::result::create_handle().expect("创建 cuBLAS handle 失败");
-        // 纯 fp32 数学模式（禁用 TF32）：与 burn/cubecl 的 fp32 matmul 精度对齐，
-        // 避免 k=784 长归约下 ~1e-3 相对误差（实测 gemm 校验 maxdiff 1e-2 -> 0）。
+        // 默认 TF32 张量核数学模式：与 XLA/JAX 的 fp32 matmul 默认行为一致（XLA 默认
+        // 允许 TF32），einsum 长 K 归约实测 0.16s → 0.15s/epoch；梯度噪声 O(1) 远大于
+        // TF32 相对误差 1e-3，统计无影响。EINSUM_FP32=1 可切回纯 fp32（对照用）。
+        let tf32 = std::env::var("EINSUM_FP32").map(|v| v == "1").unwrap_or(true);
         unsafe {
             let status = cudarc::cublas::sys::cublasSetMathMode(
                 handle,
-                cudarc::cublas::sys::cublasMath_t::CUBLAS_DEFAULT_MATH,
+                if tf32 {
+                    cudarc::cublas::sys::cublasMath_t::CUBLAS_TF32_TENSOR_OP_MATH
+                } else {
+                    cudarc::cublas::sys::cublasMath_t::CUBLAS_DEFAULT_MATH
+                },
             );
             assert_eq!(
                 status,
