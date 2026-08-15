@@ -10,3 +10,8 @@ hyperscalees-core.workspace = true
 hyperscalees-noiser = { path = "../hyperscalees-noiser" }
 hyperscalees-models = { path = "../hyperscalees-models" }
 hyperscalees-envs = { path = "../hyperscalees-envs" }
+
+[features]
+# GPU 训练：转发到 hyperscalees-core/gpu（burn-cuda / CubeCL CUDA 后端）。
+# 用法：cargo run --release -p hyperscalees --features gpu --bin accumulate_train -- ...
+gpu = ["hyperscalees-core/gpu"]

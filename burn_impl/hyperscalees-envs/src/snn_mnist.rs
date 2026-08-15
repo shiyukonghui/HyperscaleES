@@ -155,14 +155,50 @@ pub fn poisson_encode(images: Tensor<B, 2>, t: usize) -> Tensor<B, 3> {
     Tensor::cat(spikes, 0)
 }
 
+/// 奖励类型，对应 Python `fitness_from_logits(logits, labels, reward)` 的 `reward` 参数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reward {
+    /// 对数似然奖励：`log_softmax(logits, -1)[n, label_n]`。
+    Loglik,
+    /// 硬 0/1 奖励：`argmax(logits, -1) == label` 时为 1.0，否则为 0.0。
+    Binary,
+}
+
 /// Per-sample hard reward: `1.0` where `argmax(logits, -1) == label`, else `0.0`.
 ///
-/// Mirrors Python `fitness_from_logits`; returned shape is `(batch,)`.
+/// Mirrors Python `fitness_from_logits` with `reward="binary"`; returned shape is `(batch,)`.
+///
+/// 保留该二元分支为默认行为，用于兼容既有调用（如 `accuracy_from_logits`）。
 pub fn fitness_from_logits(logits: Tensor<B, 2>, labels: Tensor<B, 1, burn::tensor::Int>) -> Tensor<B, 1> {
-    let batch = logits.shape().dims::<2>()[0];
-    // argmax over the class dimension -> (batch, 1) Int.
-    let pred = logits.argmax(1).reshape([batch]);
-    pred.equal(labels).float()
+    fitness_from_logits_reward(logits, labels, Reward::Binary)
+}
+
+/// 按指定的 [`Reward`] 类型计算批内每个样本的奖励，返回形状 `(batch,)`。
+///
+/// 语义与 Python `snn_mnist_train_accumulate.py` 的 `fitness_from_logits` 一致：
+/// - [`Reward::Loglik`]：`log_softmax(logits)[n, label_n]`；
+/// - [`Reward::Binary`]：`argmax(logits, -1) == label` 的硬 0/1。
+pub fn fitness_from_logits_reward(
+    logits: Tensor<B, 2>,
+    labels: Tensor<B, 1, burn::tensor::Int>,
+    reward: Reward,
+) -> Tensor<B, 1> {
+    match reward {
+        Reward::Loglik => {
+            // log_softmax 沿类别维（维度 1）-> 形状 (batch, n_classes)
+            let log_logits = burn::tensor::activation::log_softmax(logits, 1);
+            let batch = log_logits.shape().dims::<2>()[0];
+            // 用 gather 沿类别维取出每个样本对应 label 的对数似然 -> (batch, 1)，再展平为 (batch,)
+            let labels_2d = labels.reshape([batch, 1]);
+            log_logits.gather(1, labels_2d).reshape([batch])
+        }
+        Reward::Binary => {
+            let batch = logits.shape().dims::<2>()[0];
+            // argmax over the class dimension -> (batch, 1) Int.
+            let pred = logits.argmax(1).reshape([batch]);
+            pred.equal(labels).float()
+        }
+    }
 }
 
 /// Mean over the batch of `argmax(logits) == label`, as `f32`.
@@ -318,5 +354,110 @@ mod tests {
 
         let acc = accuracy_from_logits(logits, labels);
         assert!((acc - 2.0 / 3.0).abs() < 1e-6, "acc {acc}");
+    }
+
+    #[test]
+    fn fitness_loglik_shape_and_finite() {
+        // loglik 分支：返回形状应为 (batch,)，且所有元素有限。
+        let logits = Tensor::<B, 2>::from_data(
+            [[1.0_f32, 2.0, 0.5], [3.0, 1.0, 2.0], [0.5, 0.5, 9.0]],
+            &device(),
+        );
+        let labels = Tensor::<B, 1, burn::tensor::Int>::from_data([1_i32, 0, 2], &device());
+
+        let fitness = fitness_from_logits_reward(logits, labels, Reward::Loglik);
+        assert_eq!(fitness.shape().dims::<1>(), [3]);
+        let values = fitness.to_data().to_vec::<f32>().unwrap();
+        assert!(values.iter().all(|v| v.is_finite()), "values {values:?}");
+    }
+
+    #[test]
+    fn fitness_loglik_matches_hand_computed() {
+        // 手算参考（数值稳定的 log_softmax）：
+        //   log_softmax(x)[k] = x[k] - max(x) - ln(sum_j exp(x[j] - max(x)))
+        fn log_softmax_row(row: &[f32], k: usize) -> f32 {
+            let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let sum: f32 = row.iter().map(|&x| (x - max).exp()).sum();
+            row[k] - max - sum.ln()
+        }
+
+        let logits = Tensor::<B, 2>::from_data(
+            [[1.0_f32, 2.0, 0.5], [3.0, 1.0, 2.0], [0.5, 0.5, 9.0]],
+            &device(),
+        );
+        let labels = Tensor::<B, 1, burn::tensor::Int>::from_data([1_i32, 0, 2], &device());
+
+        let values = fitness_from_logits_reward(logits, labels, Reward::Loglik)
+            .to_data()
+            .to_vec::<f32>()
+            .unwrap();
+        let expected = [
+            log_softmax_row(&[1.0, 2.0, 0.5], 1),
+            log_softmax_row(&[3.0, 1.0, 2.0], 0),
+            log_softmax_row(&[0.5, 0.5, 9.0], 2),
+        ];
+        for (v, e) in values.iter().zip(expected.iter()) {
+            assert!((v - e).abs() < 1e-5, "got {v}, expected {e}");
+        }
+    }
+
+    #[test]
+    fn fitness_loglik_equal_for_same_row_label() {
+        // 相同的 (logits 行, label) 组合必须产生完全相同的奖励元素。
+        let logits = Tensor::<B, 2>::from_data(
+            [[1.0_f32, 2.0, 0.5], [1.0, 2.0, 0.5], [3.0, 1.0, 2.0]],
+            &device(),
+        );
+        let labels = Tensor::<B, 1, burn::tensor::Int>::from_data([1_i32, 1, 0], &device());
+
+        let values = fitness_from_logits_reward(logits, labels, Reward::Loglik)
+            .to_data()
+            .to_vec::<f32>()
+            .unwrap();
+        // 第 0、1 两行的 logits 与 label 完全相同。
+        assert_eq!(values[0], values[1]);
+    }
+
+    #[test]
+    fn fitness_loglik_softmax_normalization() {
+        // softmax 归一化关系：任意一行的所有类别 exp(log_softmax) 之和应约为 1。
+        let logits = Tensor::<B, 2>::from_data(
+            [[1.0_f32, 2.0, 0.5], [3.0, 1.0, 2.0], [0.5, 0.5, 9.0]],
+            &device(),
+        );
+        let batch = 3usize;
+        let n_class = 3usize;
+        let mut row_sum = vec![0.0_f32; batch];
+        for c in 0..n_class as i32 {
+            let labels =
+                Tensor::<B, 1, burn::tensor::Int>::from_data([c; 3], &device());
+            let values = fitness_from_logits_reward(logits.clone(), labels, Reward::Loglik)
+                .to_data()
+                .to_vec::<f32>()
+                .unwrap();
+            for (acc, v) in row_sum.iter_mut().zip(values.iter()) {
+                *acc += v.exp();
+            }
+        }
+        for s in row_sum {
+            assert!((s - 1.0).abs() < 1e-4, "softmax 行和 {s} 偏离 1");
+        }
+    }
+
+    #[test]
+    fn fitness_binary_matches_legacy() {
+        // 回归：新 Reward::Binary 分支应与既有 binary 默认函数输出一致。
+        let logits = Tensor::<B, 2>::from_data(
+            [[1.0_f32, 2.0, 0.5], [3.0, 1.0, 2.0], [0.5, 0.5, 9.0]],
+            &device(),
+        );
+        let labels = Tensor::<B, 1, burn::tensor::Int>::from_data([1_i32, 0, 9], &device());
+
+        let legacy = fitness_from_logits(logits.clone(), labels.clone());
+        let new = fitness_from_logits_reward(logits, labels, Reward::Binary);
+        assert_eq!(
+            legacy.to_data().to_vec::<f32>().unwrap(),
+            new.to_data().to_vec::<f32>().unwrap()
+        );
     }
 }

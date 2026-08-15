@@ -187,6 +187,8 @@ pub fn train_smoke_stats() -> SmokeStats {
             // One sample: (T, 1, in_dim).
             let sample = spikes.clone().slice([0..SMALL_T, i..i + 1, 0..IN_DIM]);
             let info = iterinfos[i];
+            // CudaDevice 非 Copy：每个闭包单独克隆一份设备（flex 下克隆是无代价的）。
+            let nd = noise_device.clone();
             let noise_helper = move |x: Tensor<B, 2>, w: Tensor<B, 2>| -> Tensor<B, 2> {
                 let dims = w.dims();
                 let key = dim_keys
@@ -204,7 +206,7 @@ pub fn train_smoke_stats() -> SmokeStats {
                     a,
                     b,
                     nreuse,
-                    &noise_device,
+                    &nd,
                 );
                 base + x.matmul(b_t).matmul(a_t.transpose())
             };

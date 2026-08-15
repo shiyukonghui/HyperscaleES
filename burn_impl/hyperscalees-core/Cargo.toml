@@ -6,3 +6,15 @@ license.workspace = true
 
 [dependencies]
 burn.workspace = true
+
+[features]
+# 默认使用 CPU 后端（burn-flex），保证无 GPU 环境可编译可测。
+default = ["flex"]
+# CPU：burn flex（ndarray 系，f32/i32）。
+flex = ["burn/flex"]
+# GPU：burn-cuda（CubeCL CUDA 后端，运行时经 nvrtc JIT 编译内核）。
+# 需要本机已安装 NVIDIA CUDA Toolkit（构建期链接 nvrtc/driver，运行期加载驱动）。
+# 必须同时开启 burn/fusion（把连续逐元素/归约链条融合为单内核，GPU 热路径关键加速）
+# 与 burn/autotune（matmul 自动调优选最优内核）；否则裸 CubeBackend 每个 op 单独
+# 启核 + 同步，60k batch 下每 epoch 会有上千次内核启动，性能退化成 CPU 级。
+gpu = ["burn/cuda", "burn/fusion", "burn/autotune"]

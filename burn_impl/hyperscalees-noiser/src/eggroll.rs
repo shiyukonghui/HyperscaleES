@@ -12,7 +12,7 @@
 //! * `do_updates` : `new_grad = -(update_fn * sqrt(N))`, then one optimizer
 //!   step with the shared [`Solver`] plumbing.
 
-use burn::tensor::{Device, Int, Tensor};
+use burn::tensor::{Device, Int, Tensor, TensorData};
 use hyperscalees_core::B;
 
 use crate::noiser::{
@@ -100,6 +100,212 @@ pub fn get_lora_update_params(
     let b_t = lora.clone().slice([0..b, 0..rank]); // b x r
     let a_t = lora.slice([b..a + b, 0..rank]); // a x r
     (a_t.mul_scalar(sign * base_sigma), b_t)
+}
+
+/// 批量 LoRA 噪声：一次为 `tids` 中 n 个样本并行生成 `(A, B)` 对。
+///
+/// 返回 `(A, B)`：`A` 形状 `(n, a, r)` 且已乘 `sign * base_sigma`，`B` 形状
+/// `(n, b, r)` 为原始标准正态。第 i 行与
+/// `get_lora_update_params(base_sigma, key_seed, rank, &IterInfo{epoch, thread_id: tids[i]},
+/// a, b, noise_reuse, device)` 逐位一致（见测试
+/// `batched_lora_noise_matches_per_thread_get_lora_update_params`）。
+///
+/// 相比逐样本循环（60k 样本时在 GPU 上不可行），这里在 CPU 上按行分块并行填充
+/// 一个 flat 向量（每线程独立 buffer，无数据竞争），一次性上传后交给调用方做
+/// 批量 einsum（GPU 批量 matmul）。
+pub fn batched_lora_noise(
+    base_sigma: f32,
+    key_seed: u64,
+    rank: usize,
+    tids: &[i32],
+    epoch: i32,
+    noise_reuse: i32,
+    a: usize,
+    b: usize,
+    device: &Device<B>,
+) -> (Tensor<B, 3>, Tensor<B, 3>) {
+    let n = tids.len();
+    let flat = generate_lora_flat(key_seed, rank, tids, epoch, noise_reuse, a, b);
+    lora_flat_to_tensors(flat, n, a, b, rank, base_sigma, device)
+}
+
+/// 并行生成 LoRA 原始噪声 flat 向量（形状按行优先为 `(n, a+b, r)`）。
+///
+/// 每行 i 与 `get_lora_update_params` 使用完全相同的种子派生（`epoch_thread_sign` +
+/// `noise_seed`）与采样序列（行优先 `(a+b)*rank` 个标准正态），并把 `sign` 乘到
+/// 该行的 A 区（偏移 `b*rank` 起 `a*rank` 个元素）。**未乘 `base_sigma`**——调用方
+/// 在 A 区统一缩放（`lora_flat_to_tensors` 或在缓存上传时）。
+///
+/// `noise_reuse == 0` 时噪声与 `epoch` 无关（`epoch_thread_sign` 恒取 true_epoch=0），
+/// 因此可预生成一次跨 epoch 复用（见 [`LoraNoiseCache`]）。
+fn generate_lora_flat(
+    key_seed: u64,
+    rank: usize,
+    tids: &[i32],
+    epoch: i32,
+    noise_reuse: i32,
+    a: usize,
+    b: usize,
+) -> Vec<f32> {
+    let n = tids.len();
+    // 每个样本（每行）的元素数：先 B 区 b*rank 个，后 A 区 a*rank 个。
+    let row_len = (a + b) * rank;
+    if n == 0 {
+        return Vec::new();
+    }
+    // 并行度：取 CPU 核数；行数少于核数时按行数。
+    let cores = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(1);
+    let n_threads = cores.min(n);
+    let rows_per_thread = n.div_ceil(n_threads);
+    // 每个线程独立生成自己的行块到独立 buffer（避免对同一 Vec 的共享可变借用），
+    // 最后按行序合并；行内填充顺序与 `normal_tensor([a + b, rank], _)` 行优先完全一致。
+    let chunks: Vec<Vec<f32>> = std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(n_threads);
+        for t in 0..n_threads {
+            let start_row = t * rows_per_thread;
+            let end_row = ((t + 1) * rows_per_thread).min(n);
+            if start_row >= end_row {
+                continue;
+            }
+            let tids_ref = &tids[start_row..end_row];
+            handles.push(s.spawn(move || {
+                let mut buf = vec![0.0_f32; (end_row - start_row) * row_len];
+                for (local_i, &tid) in tids_ref.iter().enumerate() {
+                    // 与 get_lora_update_params 完全相同的种子派生与采样序列。
+                    let (true_epoch, true_thread, sign) =
+                        epoch_thread_sign(&IterInfo { epoch, thread_id: tid }, noise_reuse);
+                    let mut rng =
+                        DeterministicNoise::new(noise_seed(key_seed, true_epoch, true_thread));
+                    let row_start = local_i * row_len;
+                    // 行内依次生成 (a+b)*rank 个标准正态（行优先）。
+                    for k in 0..row_len {
+                        buf[row_start + k] = rng.standard_normal();
+                    }
+                    // 把 sign 乘到 A 区（偏移 b*rank 起 a*rank 个元素）。
+                    for k in 0..a * rank {
+                        buf[row_start + b * rank + k] *= sign;
+                    }
+                }
+                buf
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    // 合并为单个 flat 向量（形状 (n, a+b, r) 行优先）。
+    let mut flat = Vec::with_capacity(n * row_len);
+    for c in chunks {
+        flat.extend(c);
+    }
+    flat
+}
+
+/// 把 flat 噪声向量（行优先 `(n, a+b, r)`，A 区已乘 sign 未乘 base_sigma）上传为
+/// `(A (n,a,r) 已乘 sign*base_sigma, B (n,b,r) 原始标准正态)`。
+fn lora_flat_to_tensors(
+    flat: Vec<f32>,
+    n: usize,
+    a: usize,
+    b: usize,
+    rank: usize,
+    base_sigma: f32,
+    device: &Device<B>,
+) -> (Tensor<B, 3>, Tensor<B, 3>) {
+    if n == 0 {
+        return (
+            Tensor::<B, 3>::empty([0, a, rank], device),
+            Tensor::<B, 3>::empty([0, b, rank], device),
+        );
+    }
+    let lora = Tensor::<B, 3>::from_data(TensorData::new(flat, vec![n, a + b, rank]), device);
+    let b_t = lora.clone().slice([0..n, 0..b, 0..rank]); // (n, b, r)
+    let a_t = lora.slice([0..n, b..a + b, 0..rank]); // (n, a, r)
+    // A 区内元素已乘 sign，这里再乘 base_sigma，等价于 get_lora_update_params 的
+    // `sign * base_sigma`（IEEE 乘法符号规则保证逐位一致）。
+    (a_t.mul_scalar(base_sigma), b_t)
+}
+
+/// 跨 epoch 复用的 LoRA 噪声缓存。
+///
+/// 因为 `noise_reuse == 0` 时噪声只依赖 `(base_key, thread_id)`（true_epoch 恒为 0），
+/// 同一参数同一 thread 的噪声在所有 epoch 完全相同。因此可在训练启动前一次性并行
+/// 生成全部噪声（CPU RAM，约 20GB @ batch=60000/rank=64），之后每个 epoch 每个 chunk
+/// 只需从缓存切片 + 上传，**完全省去每 epoch 的 CPU 随机数生成**（原来约 10G 次/epoch）。
+#[derive(Debug, Clone)]
+pub struct LoraNoiseCache {
+    /// 每个参数一个缓冲（行优先 `(batch, a+b, r)`，A 区已乘 sign 未乘 base_sigma）；
+    /// `None` 表示该参数不是 LoRA（无缓存）。
+    pub buffers: Vec<Option<Vec<f32>>>,
+    /// 每个参数的形状 `(a, b)`。
+    pub shapes: Vec<[usize; 2]>,
+    /// 总样本数（= accumulate * chunk）。
+    pub batch: usize,
+    /// LoRA rank。
+    pub rank: usize,
+}
+
+impl LoraNoiseCache {
+    /// 从缓存取第 `param_idx` 个参数第 `[lo, hi)` 行（对应 `thread_ids[lo..hi]`）的
+    /// `(A (n,a,r) 已乘 sign*base_sigma, B (n,b,r))`，一次性切片复制 + 上传。
+    pub fn slice_upload(
+        &self,
+        param_idx: usize,
+        lo: usize,
+        hi: usize,
+        base_sigma: f32,
+        device: &Device<B>,
+    ) -> (Tensor<B, 3>, Tensor<B, 3>) {
+        let buf = self.buffers[param_idx].as_ref().expect("参数不是 LoRA（无缓存）");
+        let [a, b] = self.shapes[param_idx];
+        let rank = self.rank;
+        let row_len = (a + b) * rank;
+        let n = hi - lo;
+        // from_data 需要 owned Vec，这里做一次切片复制；
+        // base_sigma 缩放统一交给 `lora_flat_to_tensors`（对 A 区乘 base_sigma）。
+        let slice = buf[lo * row_len..hi * row_len].to_vec();
+        lora_flat_to_tensors(slice, n, a, b, rank, base_sigma, device)
+    }
+}
+
+/// 为每个 LoRA 参数（`es_classes[i] == 1`）预生成全 batch 噪声缓存。
+///
+/// 仅支持 `noise_reuse == 0`（噪声与 epoch 无关才可跨 epoch 复用）；生成时 epoch 取 0
+/// 即可（`epoch_thread_sign` 在 noise_reuse=0 下返回 true_epoch=0）。
+pub fn build_lora_noise_cache(
+    params: &[Tensor<B, 2>],
+    base_keys: &[u64],
+    es_classes: &[i32],
+    batch: usize,
+    rank: usize,
+    noise_reuse: i32,
+) -> LoraNoiseCache {
+    assert!(
+        noise_reuse == 0,
+        "噪声缓存仅支持 noise_reuse=0（噪声与 epoch 无关才可跨 epoch 复用）"
+    );
+    let buffers = params
+        .iter()
+        .zip(base_keys.iter())
+        .zip(es_classes.iter())
+        .map(|((p, key), cls)| {
+            if *cls != 1 {
+                return None;
+            }
+            let [a, b] = p.dims();
+            // tids = 0..batch（训练中 thread_ids 恒为 arange(batch)，缓存按位置索引）。
+            let tids: Vec<i32> = (0..batch as i32).collect();
+            let flat = generate_lora_flat(*key, rank, &tids, 0, 0, a, b);
+            Some(flat)
+        })
+        .collect();
+    let shapes = params.iter().map(|p| p.dims()).collect();
+    LoraNoiseCache {
+        buffers,
+        shapes,
+        batch,
+        rank,
+    }
 }
 
 /// Deterministic dense (`nonlora`) noise of the parameter's shape.
@@ -321,6 +527,253 @@ pub(crate) fn do_updates_impl(
     frozen.solver.update(params, &grads, &mut noiser.opt_state)
 }
 
+/// K 段 chunked einsum 累积更新，镜像 `snn_mnist_train_accumulate.py` 的
+/// `_accumulated_update`（小批次等效大批次架构，见
+/// `docs/es_batch_accumulation_architecture.md`）。
+///
+/// `conv_full` 是全文全局 z-score 后的 fitness（形状 `(batch,)`），
+/// `thread_ids` 为其逐样本的全局唯一线程 id，满足
+/// `conv_full.len() == accumulate * chunk == thread_ids.len()`。
+/// `accumulate` 即段数 K，`chunk` 为每段样本数。
+///
+/// 逐段 k：用 `epoch` 与第 k 段的 `thread_ids` 构造 `IterInfo` 列表，对每个
+/// 参数调 `do_update_with(simple_lora_update, ...)`（返回 `-einsum_k/sqrt(chunk)`），
+/// 跨全部 K 段累加梯度；累加后 `÷sqrt(K)` 恢复 `sqrt(batch)` 尺度；最后*一次*
+/// `solver.update` 应用全部梯度。
+///
+/// 数学上 `sum_k -einsum_k/sqrt(chunk) / sqrt(K) = -einsum_total / sqrt(batch)`，
+/// 与全批单次 `do_updates` 严格一致（仅 float32 累加顺序的非确定性差异），且
+/// solver step 只 +1（而非逐段单独更新 +K）。
+///
+/// 无缓存版本（`noise_cache = None`）：LoRA 噪声逐段现场生成（CPU 并行 + 上传）；
+/// 训练热路径请传 [`LoraNoiseCache`]，从缓存切片 + 上传，免去每 epoch 的 CPU 随机数。
+pub fn accumulated_update(
+    frozen: &FrozenNoiserParams,
+    noiser: &mut NoiserParams,
+    params: &[Tensor<B, 2>],
+    base_keys: &[u64],
+    es_classes: &[i32],
+    conv_full: Tensor<B, 1>,
+    thread_ids: &[i32],
+    epoch: i32,
+    accumulate: usize,
+    chunk: usize,
+) -> Vec<Tensor<B, 2>> {
+    accumulated_update_cached(
+        frozen,
+        noiser,
+        params,
+        base_keys,
+        es_classes,
+        conv_full,
+        thread_ids,
+        epoch,
+        accumulate,
+        chunk,
+        None,
+    )
+}
+
+/// [`accumulated_update`] 的缓存版本：`noise_cache` 提供预生成的 LoRA 噪声，LoRA 参数
+/// 从缓存切片上传（不再现场生成随机数）。缓存索引与 `params` 一一对应。
+pub fn accumulated_update_cached(
+    frozen: &FrozenNoiserParams,
+    noiser: &mut NoiserParams,
+    params: &[Tensor<B, 2>],
+    base_keys: &[u64],
+    es_classes: &[i32],
+    conv_full: Tensor<B, 1>,
+    thread_ids: &[i32],
+    epoch: i32,
+    accumulate: usize,
+    chunk: usize,
+    noise_cache: Option<&LoraNoiseCache>,
+) -> Vec<Tensor<B, 2>> {
+    if params.is_empty() {
+        return Vec::new();
+    }
+    // 全文 fitness 的 CPU 视图（形状 (batch,)，batch = accumulate*chunk），各段直接
+    // 切片复用，避免反复把 GPU 张量搬回 CPU。
+    let scores_full: Vec<f32> = conv_full.clone().into_data().into_vec::<f32>().unwrap();
+    // 每个参数的梯度累加器，初始化为 0（与 Python `jnp.zeros_like` 一致）。
+    let mut grad_acc: Vec<Tensor<B, 2>> = params
+        .iter()
+        .map(|p| Tensor::<B, 2>::zeros(p.dims(), &p.device()))
+        .collect();
+
+    // 逐段 k：LoRA 参数走 GPU 批量 einsum 路径；dense（FULL）参数走批量噪声加权
+    // 求和；NOOP 参数贡献为零。（60k batch 下逐样本循环在 GPU 上不可行，全部批量化。）
+    let timing = std::env::var("ACC_TIMING").map(|v| v == "1").unwrap_or(false);
+    let t_func = std::time::Instant::now();
+    let mut t_slice = 0.0_f32;
+    for k in 0..accumulate {
+        let lo = k * chunk;
+        let hi = lo + chunk;
+        // 第 k 段的全局唯一 thread id 列表。
+        let tids_k = &thread_ids[lo..hi];
+        // 对每个参数计算该段的贡献并累加。
+        for ((acc, p), (param_idx, (key, cls))) in grad_acc
+            .iter_mut()
+            .zip(params)
+            .zip(base_keys.iter().zip(es_classes.iter()).enumerate())
+        {
+            if *cls == 1 {
+                // LoRA 批量 einsum：一次为 chunk 个样本取 (A, B)，按 fitness 加权后
+                // 批量 matmul，得到未缩放（不除以 chunk）的
+                // `einsum_k = Σ_i f_i·(A_i @ B_i^T)`（A_i 已乘 sign*base_sigma）。
+                let [a, b] = p.dims();
+                let base_sigma = noiser.sigma / (frozen.rank as f32).sqrt();
+                let t_s = std::time::Instant::now();
+                let (a_t, b_t) = match noise_cache {
+                    // 热路径：从缓存切片 + 上传（免 CPU 随机数）。
+                    Some(cache) => cache.slice_upload(param_idx, lo, hi, base_sigma, &p.device()),
+                    // 冷路径（verify/无缓存）：现场生成。
+                    None => batched_lora_noise(
+                        base_sigma,
+                        *key,
+                        frozen.rank,
+                        tids_k,
+                        epoch,
+                        frozen.noise_reuse,
+                        a,
+                        b,
+                        &p.device(),
+                    ),
+                };
+                t_slice += t_s.elapsed().as_secs_f32();
+                let scores_k = Tensor::<B, 1>::from_data(&scores_full[lo..hi], &p.device());
+                let a_w = a_t * scores_k.reshape([chunk, 1, 1]); // (n, a, r) 按样本加权
+                // einsum('nir,njr->ij') 的 2D gemm 等价式：把 A（(n,a,r)）与 B（(n,b,r)）
+                // 各自 swap 成 (n,r,*) 后按行优先 reshape 为 (n*r, a) 与 (n*r, b)。
+                // 两者按相同的 (n,r) 顺序展平，故 `A_flat^T @ B_flat = Σ_{n,r} A[n,:,r]⊗B[n,:,r]`
+                // 正是 einsum 结果。相比 `(n,a,r)@(n,r,b)` 的批量 matmul（CubeCL 对 3D
+                // batched gemm 优化差、且会物化 (n,a,b) 中间张量），2D gemm 走优化内核且
+                // 不物化大中间量，是 GPU 热路径的关键加速。
+                let a_flat = a_w.swap_dims(1, 2).reshape([chunk * frozen.rank, a]); // (n*r, a)
+                let b_flat = b_t.swap_dims(1, 2).reshape([chunk * frozen.rank, b]); // (n*r, b)
+                let g = a_flat.clone().transpose().matmul(b_flat); // (a, b)
+                *acc = acc.clone() + g;
+            } else if *cls == 0 {
+                // FULL（dense）：批量噪声加权求和。逐样本语义与旧 `do_update_with` /
+                // `simple_full_update` 一致：`einsum_k = Σ_i f_i·noise_i`，其中
+                // `noise_i = sign_i·sigma·N(0,1)`（与 `get_nonlora_update_params` 完全
+                // 相同的种子派生与采样序列）。批量版一次上传 (n,a,b) 噪声后加权求和，
+                // 替代原逐样本循环（(1,1) 等小参数在 60k batch 下会产生 18 万次微小
+                // GPU 操作，成为明显瓶颈）。
+                let [a, b] = p.dims();
+                let prod = a * b;
+                let mut flat = vec![0.0_f32; chunk * prod];
+                for (i, &tid) in tids_k.iter().enumerate() {
+                    let (true_epoch, true_thread, sign) =
+                        epoch_thread_sign(&IterInfo { epoch, thread_id: tid }, frozen.noise_reuse);
+                    let mut rng =
+                        DeterministicNoise::new(noise_seed(*key, true_epoch, true_thread));
+                    let base = i * prod;
+                    for j in 0..prod {
+                        flat[base + j] = sign * noiser.sigma * rng.standard_normal();
+                    }
+                }
+                let noise =
+                    Tensor::<B, 3>::from_data(TensorData::new(flat, vec![chunk, a, b]), &p.device());
+                let scores_k = Tensor::<B, 1>::from_data(&scores_full[lo..hi], &p.device());
+                let weighted = noise * scores_k.reshape([chunk, 1, 1]); // (n,a,b)
+                let einsum_k = weighted.sum_dim(0).squeeze_dim::<2>(0); // (a,b)
+                *acc = acc.clone() + einsum_k;
+            }
+            // NOOP(2,3)：贡献为零，跳过。
+        }
+    }
+
+    // 统一缩放：`-1/sqrt(chunk*accumulate) = -1/sqrt(batch)`，数学上等于
+    // `-Σeinsum_k/sqrt(batch)`，与全批一次性 do_updates 严格一致（见模块注释，
+    // 仅 float32 累加顺序的非确定性差异）。
+    let scale = -1.0 / ((chunk * accumulate) as f32).sqrt();
+    let grads: Vec<Tensor<B, 2>> = grad_acc.into_iter().map(|g| g.mul_scalar(scale)).collect();
+
+    if timing {
+        eprintln!(
+            "  [accumulated_update] total={:.2}s slice_upload={:.2}s",
+            t_func.elapsed().as_secs_f32(),
+            t_slice
+        );
+    }
+    // 最后一次性 solver 更新（step 只 +1，而非逐段 +K）。
+    frozen.solver.update(params, &grads, &mut noiser.opt_state)
+}
+
+// ---------------------------------------------------------------------------
+// 内联（GPU 噪声）路径辅助函数
+// ---------------------------------------------------------------------------
+//
+// 训练热路径（见 `accumulate_train` 二进制）在 GPU 上直接生成噪声（`Tensor::random`），
+// 前向与梯度共享受同一份 (A, B)，因此**完全没有 CPU 随机数与 CPU→GPU 上传**（原缓存
+// 切片上传是主要瓶颈：batch=60000 时每 epoch 约 40GB 上传）。因「先全部前向、再全局
+// z-score」需要先有全部 raw fitness 才能归一化，这里用**仿射等价**：全局 z-score 是
+// `conv = (raw - mean)/std`，而 einsum 对 fitness 线性，故
+//
+//   Σ_k einsum(conv_k) = (Σ einsum(raw) - mean · Σ einsum(1)) / std
+//
+// 于是可以逐 chunk 用 raw fitness 累积 `grad_acc`（加权 einsum）与 `ones_acc`
+// （einsum over 全 1），最后一次性仿射修正 + solver 更新——数学上与两阶段
+// `accumulated_update` 严格一致（测试 `inline_affine_matches_accumulated_two_phase` 验证）。
+
+/// `einsum('nir,njr->ij')` 的 raw 加权版：`Σ_i f_i·(A_i @ B_i^T)`。
+///
+/// 用 2D gemm 等价式（A/B 按相同 (n,r) 顺序展平后转置相乘），避免 CubeCL 对
+/// 3D 批量 matmul 的差性能与 (n,a,b) 大中间张量。
+pub fn lora_einsum_raw(
+    a_t: &Tensor<B, 3>,     // (n, a, r)，A 已乘 sign*base_sigma
+    b_t: &Tensor<B, 3>,     // (n, b, r)
+    scores: &[f32],         // (n,)
+    device: &Device<B>,
+) -> Tensor<B, 2> {
+    let [n, a, r] = a_t.dims();
+    let scores_t = Tensor::<B, 1>::from_data(scores, device);
+    let a_w = a_t.clone() * scores_t.reshape([n, 1, 1]); // (n,a,r) 按样本加权
+    let a_flat = a_w.swap_dims(1, 2).reshape([n * r, a]); // (n*r, a)
+    let b_flat = b_t.clone().swap_dims(1, 2).reshape([n * r, b_t.dims()[1]]); // (n*r, b)
+    a_flat.transpose().matmul(b_flat) // (a, b)
+}
+
+/// `einsum('nir,njr->ij')` 的 unweighted 版：`Σ_i (A_i @ B_i^T)`（仿射修正的 ones 项）。
+pub fn lora_einsum_ones(a_t: &Tensor<B, 3>, b_t: &Tensor<B, 3>, device: &Device<B>) -> Tensor<B, 2> {
+    let [n, a, r] = a_t.dims();
+    let a_flat = a_t.clone().swap_dims(1, 2).reshape([n * r, a]); // (n*r, a)
+    let b_flat = b_t.clone().swap_dims(1, 2).reshape([n * r, b_t.dims()[1]]); // (n*r, b)
+    a_flat.transpose().matmul(b_flat) // (a, b)
+}
+
+/// dense（FULL）raw 加权版：`Σ_i f_i·noise_i`（noise 形状 (n,a,b)）。
+pub fn dense_einsum_raw(noise: &Tensor<B, 3>, scores: &[f32], device: &Device<B>) -> Tensor<B, 2> {
+    let n = noise.dims()[0];
+    let scores_t = Tensor::<B, 1>::from_data(scores, device);
+    let weighted = noise.clone() * scores_t.reshape([n, 1, 1]); // (n,a,b)
+    weighted.sum_dim(0).squeeze_dim::<2>(0) // (a,b)
+}
+
+/// dense（FULL）ones 版：`Σ_i noise_i`（仿射修正的 ones 项）。
+pub fn dense_einsum_ones(noise: &Tensor<B, 3>, device: &Device<B>) -> Tensor<B, 2> {
+    noise.clone().sum_dim(0).squeeze_dim::<2>(0) // (a,b)
+}
+
+/// 仿射修正 + 尺度恢复：最终 solver 输入梯度
+/// `-(grad_acc - mean·ones_acc) / (std·sqrt(batch))`，与两阶段 `accumulated_update`
+/// 的 `-Σeinsum(conv)/sqrt(batch)` 严格一致。
+pub fn combine_affine_grads(
+    grad_acc: &[Tensor<B, 2>],
+    ones_acc: &[Tensor<B, 2>],
+    mean: f32,
+    std: f32,
+    batch: usize,
+) -> Vec<Tensor<B, 2>> {
+    let scale = -1.0 / (std * (batch as f32).sqrt());
+    grad_acc
+        .iter()
+        .zip(ones_acc.iter())
+        .map(|(g, o)| (g.clone() - o.clone().mul_scalar(mean)).mul_scalar(scale))
+        .collect()
+}
+
 impl Noiser for EggRoll {
     fn do_mm(
         &self,
@@ -502,6 +955,78 @@ mod tests {
         assert!(to_vec(a1).iter().zip(to_vec(a3).iter()).any(|(x, y)| x != y));
     }
 
+    // -- batched_lora_noise ----------------------------------------------
+
+    #[test]
+    fn batched_lora_noise_matches_per_thread_get_lora_update_params() {
+        // 小规模批量验证：batched_lora_noise 的每一行必须与按单个 tid 调
+        // get_lora_update_params 的结果逐位一致（含 sign 与 base_sigma 处理）。
+        let n = 3usize;
+        let a = 2usize;
+        let b = 3usize;
+        let r = 2usize;
+        let tids = [0_i32, 1, 2];
+        let epoch = 5_i32;
+        let noise_reuse = 1_i32;
+        let base_sigma = 0.25_f32;
+        let key = 1234u64;
+
+        let (a_b, b_b) =
+            batched_lora_noise(base_sigma, key, r, &tids, epoch, noise_reuse, a, b, &device());
+        assert_eq!(a_b.dims(), [n, a, r]);
+        assert_eq!(b_b.dims(), [n, b, r]);
+
+        for (i, &tid) in tids.iter().enumerate() {
+            let info = IterInfo { epoch, thread_id: tid };
+            let (a_i, b_i) =
+                get_lora_update_params(base_sigma, key, r, &info, a, b, noise_reuse, &device());
+            // batched 的第 i 行与单样本结果逐位相等。
+            let a_row = a_b.clone().slice([i..i + 1, 0..a, 0..r]).reshape([a, r]);
+            let b_row = b_b.clone().slice([i..i + 1, 0..b, 0..r]).reshape([b, r]);
+            assert_eq!(to_vec(a_row), to_vec(a_i), "A 第 {i} 行 (tid={tid}) 不一致");
+            assert_eq!(to_vec(b_row), to_vec(b_i), "B 第 {i} 行 (tid={tid}) 不一致");
+        }
+    }
+
+    #[test]
+    fn batched_lora_noise_empty_tids_returns_empty_tensors() {
+        // n == 0 时返回形状 [0, a, r] / [0, b, r] 的空张量。
+        let (a_b, b_b) = batched_lora_noise(0.25, 1u64, 2, &[], 0, 0, 2, 3, &device());
+        assert_eq!(a_b.dims(), [0, 2, 2]);
+        assert_eq!(b_b.dims(), [0, 3, 2]);
+        assert!(to_vec(a_b).is_empty());
+        assert!(to_vec(b_b).is_empty());
+    }
+
+    // -- LoraNoiseCache ---------------------------------------------------
+
+    #[test]
+    fn lora_noise_cache_slice_upload_matches_batched_lora_noise() {
+        // 缓存切片上传的结果必须与现场 batched_lora_noise 逐位一致（训练热路径
+        // 依赖缓存 == 冷路径生成，保证前向与更新的噪声一致）。
+        let a = 2usize;
+        let b = 3usize;
+        let r = 2usize;
+        let batch = 5usize;
+        let rank = r;
+        let noise_reuse = 0_i32;
+        let base_sigma = 0.25_f32;
+        let key = 99u64;
+        // 构造 params 中一个 LoRA 参数（形状 (a,b)），es_classes=[1]。
+        let p = Tensor::<B, 2>::zeros([a, b], &device());
+        let cache = build_lora_noise_cache(&[p], &[key], &[1], batch, rank, noise_reuse);
+        assert_eq!(cache.buffers.len(), 1);
+        assert!(cache.buffers[0].is_some());
+        // 取 [2, 5) 段（对应 tids 2..5）。
+        let (a_c, b_c) = cache.slice_upload(0, 2, 5, base_sigma, &device());
+        assert_eq!(a_c.dims(), [3, a, r]);
+        assert_eq!(b_c.dims(), [3, b, r]);
+        let tids = [2_i32, 3, 4];
+        let (a_b, b_b) = batched_lora_noise(base_sigma, key, r, &tids, 0, noise_reuse, a, b, &device());
+        assert_eq!(to_vec(a_c), to_vec(a_b), "缓存 A 与现场生成不一致");
+        assert_eq!(to_vec(b_c), to_vec(b_b), "缓存 B 与现场生成不一致");
+    }
+
     // -- _simple_lora_update (via do_update path pieces) -------------------
 
     #[test]
@@ -625,6 +1150,205 @@ mod tests {
         let fitness2 = Tensor::<B, 1>::from_data([0.5_f32, -1.0], &device());
         let updated3 = EggRoll.do_updates(&frozen, &mut noiser, &[p], &[5u64], fitness2, &infos, &[1]);
         assert!(to_vec(updated3[0].clone()).iter().all(|x| x.is_finite()));
+    }
+
+    // -- accumulated_update ----------------------------------------------
+
+    #[test]
+    fn accumulated_update_matches_do_updates_and_steps_once() {
+        // 用 AdamW、小子尺寸（rank=2）、3 段 × 每段 4 样本，验证 K 段累积更新
+        // （accumulated_update）与全批一次性 do_updates 产出参数逐元素一致，
+        // 且 solver step 只 +1。
+        let lr = 0.01_f32;
+        let sigma = 0.5_f32;
+        let rank = 2usize;
+        let frozen = frozen_with(0, false, 0, rank, Solver::adamw(lr));
+        let p = Tensor::<B, 2>::from_data(
+            [
+                [0.1_f32, 0.2, 0.3],
+                [0.4, 0.5, 0.6],
+            ],
+            &device(),
+        );
+
+        // 全长 conv（批长 = 3 段 × 4 = 12 样本）与全局唯一的 thread_ids。
+        let conv_full = Tensor::<B, 1>::from_data(
+            [
+                1.0_f32, -0.5, 2.0, 0.5, // chunk 0
+                -1.0, 1.5, 0.25, -0.75, // chunk 1
+                1.0, -0.25, 0.75, -1.5, // chunk 2
+            ],
+            &device(),
+        );
+        let thread_ids: Vec<i32> = (0..12).collect();
+
+        // 路径 A：全批一次性 do_updates（同一初态）。
+        let mut noiser_full = noiser_with(sigma, &frozen, &[p.clone()]);
+        let full_infos: Vec<IterInfo> = thread_ids
+            .iter()
+            .map(|&t| IterInfo { epoch: 3, thread_id: t })
+            .collect();
+        let updated_full = EggRoll.do_updates(
+            &frozen,
+            &mut noiser_full,
+            &[p.clone()],
+            &[42u64],
+            conv_full.clone(),
+            &full_infos,
+            &[1],
+        );
+
+        // 路径 B：K 段累积更新（同一初态）。
+        let mut noiser_acc = noiser_with(sigma, &frozen, &[p.clone()]);
+        let updated_acc = accumulated_update(
+            &frozen,
+            &mut noiser_acc,
+            &[p.clone()],
+            &[42u64],
+            &[1],
+            conv_full.clone(),
+            &thread_ids,
+            3, // epoch
+            3, // accumulate = K = 3 段
+            4, // chunk = 每段 4 样本
+        );
+
+        // 逐元素最大绝对差 ≈ 0（float32 累加顺序差异，容差 1e-5）。
+        let a = to_vec(updated_full[0].clone());
+        let b = to_vec(updated_acc[0].clone());
+        let max_diff = a
+            .iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-5, "max|Δparam| = {max_diff} (> 1e-5)");
+
+        // solver step 只 +1（累积后一次 solver.update），而非逐段 +3。
+        assert_eq!(noiser_acc.opt_state.step, 1);
+        assert_eq!(noiser_full.opt_state.step, 1);
+    }
+
+    // -- 内联（GPU 噪声）辅助函数 -----------------------------------------
+
+    #[test]
+    fn lora_einsum_helpers_match_hand_computed() {
+        // 小规模手算：A (2,a=2,r=2)、B (2,b=3,r=2)、scores [0.5, -1.0]。
+        let a_t = Tensor::<B, 3>::from_data(
+            [
+                [[1.0_f32, 2.0], [3.0, 4.0]],
+                [[5.0, 6.0], [7.0, 8.0]],
+            ],
+            &device(),
+        ); // (2, 2, 2)
+        let b_t = Tensor::<B, 3>::from_data(
+            [
+                [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+                [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]],
+            ],
+            &device(),
+        ); // (2, 3, 2)
+        let scores = [0.5_f32, -1.0_f32];
+
+        // 手算 einsum('nir,njr->ij')：Σ_n Σ_r A[n,i,r]·B[n,j,r]。
+        let raw = lora_einsum_raw(&a_t, &b_t, &scores, &device());
+        let ones = lora_einsum_ones(&a_t, &b_t, &device());
+        let mut exp_raw = vec![0.0_f32; 6];
+        let mut exp_ones = vec![0.0_f32; 6];
+        for n in 0..2 {
+            for i in 0..2 {
+                for j in 0..3 {
+                    for r in 0..2 {
+                        let v = a_t.clone().slice([n..n + 1, i..i + 1, r..r + 1]).into_scalar();
+                        let w = b_t.clone().slice([n..n + 1, j..j + 1, r..r + 1]).into_scalar();
+                        exp_ones[i * 3 + j] += v * w;
+                        exp_raw[i * 3 + j] += scores[n] * v * w;
+                    }
+                }
+            }
+        }
+        let got_raw = to_vec(raw);
+        let got_ones = to_vec(ones);
+        for k in 0..6 {
+            assert!((got_raw[k] - exp_raw[k]).abs() < 1e-4, "raw[{k}]={} exp={}", got_raw[k], exp_raw[k]);
+            assert!((got_ones[k] - exp_ones[k]).abs() < 1e-4, "ones[{k}]={} exp={}", got_ones[k], exp_ones[k]);
+        }
+    }
+
+    #[test]
+    fn dense_einsum_helpers_match_hand_computed() {
+        // 小规模手算：noise (2, 1, 1)、scores [2.0, 3.0]。
+        let noise = Tensor::<B, 3>::from_data([[[4.0_f32]], [[-1.0]]], &device()); // (2,1,1)
+        let scores = [2.0_f32, 3.0_f32];
+        // Σ f_i·noise_i = 2*4 + 3*(-1) = 5；Σ noise_i = 3。
+        let raw = dense_einsum_raw(&noise, &scores, &device());
+        let ones = dense_einsum_ones(&noise, &device());
+        assert!((to_vec(raw)[0] - 5.0).abs() < 1e-5);
+        assert!((to_vec(ones)[0] - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn inline_affine_matches_accumulated_two_phase() {
+        // 关键等价性：给定完全相同的噪声（用确定性缓存切片），内联路径
+        // （raw 加权累积 + 仿射修正 + 一次 solver）必须与两阶段 accumulated_update
+        // （全局 z-score + chunked einsum）产出参数一致。验证仿射恒等式
+        // `Σeinsum((raw-mean)/std) = (Σeinsum(raw) - mean·Σeinsum(1))/std`。
+        let lr = 0.01_f32;
+        let sigma = 0.5_f32;
+        let rank = 2usize;
+        let frozen = frozen_with(0, false, 0, rank, Solver::adamw(lr));
+        // 一个 LoRA 参数 (a=2, b=3)。
+        let p = Tensor::<B, 2>::from_data([[0.1_f32, 0.2, 0.3], [0.4, 0.5, 0.6]], &device());
+        // 批长 8 = K=2 × chunk=4；raw fitness（z-score 前的值）。
+        let raw = vec![1.0_f32, -0.5, 2.0, 0.5, -1.0, 1.5, 0.25, -0.75];
+        let thread_ids: Vec<i32> = (0..8).collect();
+        // 确定性噪声缓存（与内联用相同切片）。
+        let cache = build_lora_noise_cache(&[p.clone()], &[42u64], &[1], 8, rank, 0);
+
+        // 两阶段路径：raw -> 全局 z-score -> accumulated_update（cache 提供相同噪声）。
+        let raw_t = Tensor::<B, 1>::from_data(&raw[..], &device());
+        let conv = EggRoll.convert_fitnesses(&frozen, &noiser_with(sigma, &frozen, &[p.clone()]), raw_t);
+        let mut noiser_2p = noiser_with(sigma, &frozen, &[p.clone()]);
+        let updated_2p = accumulated_update_cached(
+            &frozen,
+            &mut noiser_2p,
+            &[p.clone()],
+            &[42u64],
+            &[1],
+            conv,
+            &thread_ids,
+            0,
+            2, // accumulate
+            4, // chunk
+            Some(&cache),
+        );
+
+        // 内联路径：逐 chunk 用 raw 累积 grad_acc/ones_acc，仿射修正 + 一次 solver。
+        let base_sigma = sigma / (rank as f32).sqrt();
+        let mut noiser_inl = noiser_with(sigma, &frozen, &[p.clone()]);
+        let mut grad_acc = Tensor::<B, 2>::zeros(p.dims(), &device());
+        let mut ones_acc = Tensor::<B, 2>::zeros(p.dims(), &device());
+        let mut sum_raw = 0.0_f32;
+        let mut sum_raw2 = 0.0_f32;
+        for k in 0..2 {
+            let lo = k * 4;
+            let hi = lo + 4;
+            let (a_t, b_t) = cache.slice_upload(0, lo, hi, base_sigma, &device());
+            let scores = &raw[lo..hi];
+            grad_acc = grad_acc + lora_einsum_raw(&a_t, &b_t, scores, &device());
+            ones_acc = ones_acc + lora_einsum_ones(&a_t, &b_t, &device());
+            sum_raw += scores.iter().sum::<f32>();
+            sum_raw2 += scores.iter().map(|x| x * x).sum::<f32>();
+        }
+        let mean = sum_raw / 8.0;
+        let var = sum_raw2 / 8.0 - mean * mean;
+        let std = (var + 1e-5).sqrt();
+        let grads = combine_affine_grads(&[grad_acc], &[ones_acc], mean, std, 8);
+        let updated_inl = frozen.solver.update(&[p.clone()], &grads, &mut noiser_inl.opt_state);
+
+        let a = to_vec(updated_2p[0].clone());
+        let b = to_vec(updated_inl[0].clone());
+        let max_diff = a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0_f32, f32::max);
+        assert!(max_diff < 1e-4, "内联 vs 两阶段 max|Δparam| = {max_diff} (> 1e-4)");
     }
 
     // -- init_noiser -------------------------------------------------------
