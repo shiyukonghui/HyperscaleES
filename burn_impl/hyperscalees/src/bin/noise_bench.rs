@@ -60,7 +60,28 @@ fn time_ms<F: FnMut() -> Tensor<B, 1>>(warmup: bool, iters: usize, mut f: F) -> 
         eprintln!("  [dbg] raw times = {times:?}");
         return f64::NAN;
     }
+    if std::env::var("BENCH_RAW").map(|v| v == "1").unwrap_or(false) {
+        eprintln!("    raw={times:?}");
+    }
     sum / n
+}
+
+/// 同 time_ms，但闭包返回 rank-3 张量（用 into_data 同步）。
+fn time_ms3<F: FnMut() -> Tensor<B, 3>>(warmup: bool, iters: usize, mut f: F) -> f64 {
+    if warmup {
+        let _ = f().into_data();
+    }
+    let mut times: Vec<f64> = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t0 = Instant::now();
+        let out = f();
+        out.into_data(); // 强制同步
+        times.push(t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    if std::env::var("BENCH_RAW").map(|v| v == "1").unwrap_or(false) {
+        eprintln!("    raw={times:?}");
+    }
+    times.iter().sum::<f64>() / times.len() as f64
 }
 
 fn main() {
@@ -90,7 +111,8 @@ fn main() {
         println!("[0a] cublas_gemm_check        : ref={va:?} cu={vb:?} maxdiff={maxd:.3e}");
         assert!(maxd < 1e-4, "cuBLAS gemm 数值错误");
 
-        // lora_einsum_pair_cublas vs 通用 lora_einsum_pair（相同反对称输入）。
+        // [0b] 半噪声配对 einsum 校验：lora_einsum_pair_half（只存前半，配对隐含）
+        // 与 lora_einsum_pair（完整配对张量）数学一致。
         let n_s = 8usize;
         let r_s = 3usize;
         let a_s = 2usize;
@@ -99,11 +121,12 @@ fn main() {
             Tensor::random([n_s / 2, r_s, a_s], Distribution::Normal(0.0, 1.0), &device);
         let b_half: Tensor<B, 3> =
             Tensor::random([n_s / 2, r_s, b_s], Distribution::Normal(0.0, 1.0), &device);
-        let a_t = Tensor::cat(vec![a_half.clone(), a_half.neg()], 0);
-        let b_t = Tensor::cat(vec![b_half.clone(), b_half.neg()], 0);
+        let a_t = Tensor::cat(vec![a_half.clone(), a_half.clone().neg()], 0);
+        let b_t = Tensor::cat(vec![b_half.clone(), b_half.clone().neg()], 0);
         let scores: Tensor<B, 1> = Tensor::random([n_s], Distribution::Normal(0.0, 1.0), &device);
         let (g1, o1) = hyperscalees_noiser::eggroll::lora_einsum_pair(&a_t, &b_t, &scores, &device);
-        let (g2, o2) = hyperscalees::cublas::lora_einsum_pair_cublas(&a_t, &b_t, &scores, &device);
+        let (g2, o2) =
+            hyperscalees_noiser::eggroll::lora_einsum_pair_half(&a_half, &b_half, &scores, &device);
         let maxd = |x: Tensor<B, 2>, y: Tensor<B, 2>| {
             let vx = x.into_data().into_vec::<f32>().unwrap();
             let vy = y.into_data().into_vec::<f32>().unwrap();
@@ -114,41 +137,148 @@ fn main() {
         };
         let d_raw = maxd(g1, g2);
         let d_ones = maxd(o1, o2);
-        println!("[0b] cublas_pair_einsum_check : raw={d_raw:.3e} ones={d_ones:.3e} (应 <1e-4)");
-        assert!(d_raw < 1e-4 && d_ones < 1e-4, "cuBLAS 配对 einsum 数值错误");
+        println!("[0b] half_pair_einsum_check   : raw={d_raw:.3e} ones={d_ones:.3e} (应 <1e-4)");
+        assert!(d_raw < 1e-4 && d_ones < 1e-4, "半噪声配对 einsum 数值错误");
 
-        // [0c] 反对称 prng 内核校验：B'[n/2+i] == -B'[i]，A' 同理（真实规模）。
+        // [0c] 半量噪声生成校验：返回 (n/2, r, *) 张量，分布 N(mean, std²)。
         let n_s = 16usize;
         let r_s = 64usize;
         let b_s = 64usize;
         let (a_g, b_g) = hyperscalees::cublas::gen_lora_noise_antipodal(
             n_s, r_s, 16, b_s, 0.25, &device,
         );
+        assert_eq!(b_g.dims(), [n_s / 2, r_s, b_s], "B' 应为 (n/2, r, b)");
+        assert_eq!(a_g.dims(), [n_s / 2, r_s, 16], "A' 应为 (n/2, r, a)");
         let bv = b_g.into_data().into_vec::<f32>().unwrap();
         let half = n_s / 2 * r_s * b_s;
-        let maxd = bv[..half]
-            .iter()
-            .zip(bv[half..].iter())
-            .map(|(x, y)| (x + y).abs())
-            .fold(0.0_f32, f32::max);
-        println!("[0c] antipodal_kernel_check  : max|B'[i]+B'[n/2+i]|={maxd:.3e} (应≈0)");
-        assert!(maxd < 1e-6, "B' 反对称结构错误");
+        let mean = bv.iter().sum::<f32>() / half as f32;
+        let var = bv.iter().map(|x| x * x).sum::<f32>() / half as f32 - mean * mean;
+        println!("[0c] half_noise_check        : mean={mean:.3} var={var:.3} (应≈0, ≈1)");
+        assert!(mean.abs() < 0.1 && (var - 1.0).abs() < 0.2, "B' 半噪声分布异常");
         let av = a_g.into_data().into_vec::<f32>().unwrap();
-        let half_a = n_s / 2 * r_s * 16;
-        let maxd2 = av[..half_a]
-            .iter()
-            .zip(av[half_a..].iter())
-            .map(|(x, y)| (x + y).abs())
-            .fold(0.0_f32, f32::max);
-        println!("[0c2] antipodal_A_check       : max|A'[i]+A'[n/2+i]|={maxd2:.3e} (应≈0)");
-        assert!(maxd2 < 1e-6, "A' 反对称结构错误");
-        // 前半应与直接 random_normal 同分布（均值/方差粗检）。
-        let mean = bv[..half].iter().sum::<f32>() / half as f32;
-        let var = bv[..half].iter().map(|x| x * x).sum::<f32>() / half as f32 - mean * mean;
-        println!(
-            "[0c3] antipodal_dist_check     : mean={mean:.3} var={var:.3} (应≈0, ≈1)"
+        let mean_a = av.iter().sum::<f32>() / av.len() as f32;
+        let var_a = av.iter().map(|x| x * x).sum::<f32>() / av.len() as f32 - mean_a * mean_a;
+        println!("[0c2] half_noise_A_check     : mean={mean_a:.3} var={var_a:.3} (应≈0, ≈0.0625)");
+        assert!(
+            mean_a.abs() < 0.1 && (var_a - 0.0625).abs() < 0.02,
+            "A' 半噪声分布异常"
         );
-        assert!(mean.abs() < 0.1 && (var - 1.0).abs() < 0.2, "B' 前半分布异常");
+
+        // [0e] 通用 gemm 帮助函数校验（容差 1e-1：burn 侧该形状启用 TF32，cuBLAS 为
+        // 纯 fp32，差异 ~2.5e-4 相对值；转置/布局错误会给出 O(1) 误差仍能抓住）。
+        let m0 = 12usize;
+        let k0 = 784usize;
+        let n0 = 16usize;
+        let am: Tensor<B, 2> = Tensor::random([m0, k0], Distribution::Normal(0.0, 1.0), &device);
+        let bm: Tensor<B, 2> = Tensor::random([k0, n0], Distribution::Normal(0.0, 1.0), &device);
+        let c_ref = am.clone().matmul(bm.clone());
+        let c_cu = hyperscalees::cublas::gemm(&am, &bm, &device);
+        let va = c_ref.into_data().into_vec::<f32>().unwrap();
+        let vb = c_cu.into_data().into_vec::<f32>().unwrap();
+        let maxd = va
+            .iter()
+            .zip(vb.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max);
+        println!("[0e] cublas_gemm_check       : maxdiff={maxd:.3e} (应 <1e-1)");
+        assert!(maxd < 1e-1, "cuBLAS gemm 错误");
+
+        // [0f] batched gemm 帮助函数校验：batched_gemm_bt / batched_gemm。
+        // 约定：batched_gemm_bt 消费批在中间维的 x (m, n, k)（前向 (T, n, *) 布局），
+        // 输出批在第一维 (n, m, r)；batched_gemm 消费 (n, m, k) 批在第一维。
+        let nb = 4usize;
+        let mb = 3usize;
+        let kb = 784usize;
+        let rb = 64usize;
+        let xp: Tensor<B, 3> =
+            Tensor::random([mb, nb, kb], Distribution::Normal(0.0, 1.0), &device);
+        let b3: Tensor<B, 3> =
+            Tensor::random([nb, rb, kb], Distribution::Normal(0.0, 1.0), &device);
+        let y_ref = xp.clone().swap_dims(0, 1).matmul(b3.clone().swap_dims(1, 2)); // (n, m, r)
+        let y_cu = hyperscalees::cublas::batched_gemm_bt(&xp, &b3, &device);
+        let va = y_ref.clone().into_data().into_vec::<f32>().unwrap();
+        let vb = y_cu.clone().into_data().into_vec::<f32>().unwrap();
+        let maxd = va
+            .iter()
+            .zip(vb.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max);
+        println!("[0f] cublas_batched_bt_check  : maxdiff={maxd:.3e} (应 <1e-1)");
+        println!("      ref={:?} cu={:?}", &va[..8], &vb[..8]);
+        assert!(maxd < 1e-1, "cuBLAS batched_gemm_bt 错误");
+        let lb = 16usize;
+        // a3 缩放到 ~1/30：y 是上一级 GEMM 结果（std≈28，burn 侧 TF32 误差 ~7e-2），
+        // 两级误差传播后 burn 参考与 cuBLAS 的差 ~2e-2；真实布局错误给出 O(1) 级误差。
+        let a3: Tensor<B, 3> =
+            Tensor::random([nb, rb, lb], Distribution::Normal(0.0, 1.0 / 30.0), &device);
+        let z_ref = y_ref.clone().matmul(a3.clone()); // (n, m, l)
+        // 分支 1：y 为 batched_gemm_bt 的转置视图（每批列主序）。
+        let z_cu = hyperscalees::cublas::batched_gemm(&y_cu, &a3, &device);
+        // 分支 2：y 为连续 (n, m, k)（每批行主序）。
+        let z_cu2 = hyperscalees::cublas::batched_gemm(&y_ref, &a3, &device);
+        let va = z_ref.into_data().into_vec::<f32>().unwrap();
+        let vb = z_cu.into_data().into_vec::<f32>().unwrap();
+        let vc = z_cu2.into_data().into_vec::<f32>().unwrap();
+        let maxd = va
+            .iter()
+            .zip(vb.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max);
+        let maxd2 = va
+            .iter()
+            .zip(vc.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max);
+        println!("[0g] cublas_batched_check     : maxdiff(view)={maxd:.3e} maxdiff(contig)={maxd2:.3e} (应 <1e-1)");
+        assert!(maxd < 1e-1, "cuBLAS batched_gemm 错误（转置视图分支）");
+        assert!(maxd2 < 1e-1, "cuBLAS batched_gemm 错误（连续分支）");
+
+        // [0d] 半噪声前向等价性：forward_batched_lora_half（只存前半，配对隐含）与
+        // forward_batched_lora（完整配对张量）一致。用 v_th = -1e9 强制全发放
+        // （线性区）：spike 图案确定性，误差只来自 GEMM 数值（TF32 ~1e-2），避免
+        // 阈值翻转的混沌放大（真实阈值下 TF32 差异也会导致 O(1) 级差异）。
+        use hyperscalees_models::snn::TrainableVthSnn;
+        let model = TrainableVthSnn::new(784, 16, 16, 10, 0.3, &device);
+        let xf: Tensor<B, 3> = Tensor::random([3, 4, 784], Distribution::Bernoulli(0.5), &device);
+        let rank_s = 64usize;
+        let mut noises_h: Vec<(Tensor<B, 3>, Tensor<B, 3>)> = Vec::new();
+        let mut noises_f: Vec<(Tensor<B, 3>, Tensor<B, 3>)> = Vec::new();
+        for (aa, bb) in [(16usize, 784usize), (16, 16), (10, 16)] {
+            let (a_h, b_h) =
+                hyperscalees::cublas::gen_lora_noise_antipodal(4, rank_s, aa, bb, 0.25, &device);
+            noises_f.push((
+                Tensor::cat(vec![a_h.clone(), a_h.clone().neg()], 0),
+                Tensor::cat(vec![b_h.clone(), b_h.clone().neg()], 0),
+            ));
+            noises_h.push((a_h, b_h));
+        }
+        let vth_q = -1e9_f32;
+        let out_ref = model.forward_batched_lora(xf.clone(), vth_q, vth_q, &noises_f);
+        let out_half = model.forward_batched_lora_half(xf.clone(), vth_q, vth_q, &noises_h);
+        let out_cu = hyperscalees::cublas::forward_batched_lora_cublas(
+            &model,
+            xf,
+            vth_q,
+            vth_q,
+            &noises_f,
+            &device,
+        );
+        let va = out_ref.clone().into_data().into_vec::<f32>().unwrap();
+        let vb = out_half.into_data().into_vec::<f32>().unwrap();
+        let vc = out_cu.into_data().into_vec::<f32>().unwrap();
+        let maxd = va
+            .iter()
+            .zip(vb.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max);
+        let maxd2 = va
+            .iter()
+            .zip(vc.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f32, f32::max);
+        println!("[0d] half_forward_check       : maxdiff(half)={maxd:.3e} maxdiff(cublas)={maxd2:.3e} (应 <1e-1)");
+        assert!(maxd < 1e-1, "半噪声前向与 burn 前向不一致");
+        assert!(maxd2 < 1e-1, "cuBLAS 前向与 burn 前向不一致");
     }
 
     let x: Tensor<B, 3> = Tensor::random([t, n, b], Distribution::Bernoulli(0.3), &device);
@@ -582,4 +712,85 @@ fn main() {
     println!(
         "[15] gen_real_overlap        : seq={seq:.3}s par={par:.3}s (par≈seq 无重叠；≈seq/2 有重叠)"
     );
+
+    // ---- 16+. 训练真实形状（chunk=12000, T=8, r=64）的 cuBLAS 分片计时 ----
+    let nch = 12000usize;
+    let t8 = 8usize;
+    let rk = 64usize;
+    let xr: Tensor<B, 3> = Tensor::random([t8, nch, b], Distribution::Bernoulli(0.5), &device);
+    let br: Tensor<B, 3> = Tensor::random([nch, rk, b], Distribution::Normal(0.0, 1.0), &device);
+    let ar: Tensor<B, 3> = Tensor::random([nch, rk, a], Distribution::Normal(0.0, 1.0), &device);
+    let wr: Tensor<B, 2> =
+        Tensor::random([a, b], Distribution::Normal(0.0, 1.0 / 28.0), &device);
+    let x2r = xr.clone().reshape([t8 * nch, b]);
+    let br2 = br.clone().swap_dims(1, 2); // (n, b, r) 列主序视图（burn 参考用）
+    let xp = xr.clone().swap_dims(0, 1).reshape([nch, t8, b]); // 连续拷贝（burn 参考用）
+    // [16] base GEMM：x (96000,784) @ w^T (16,784) —— cuBLAS 与 burn。
+    let cu = time_ms(true, 3, || {
+        hyperscalees::cublas::gemm_abt(&x2r.clone(), &wr, &device).sum()
+    });
+    let t0 = Instant::now();
+    for _ in 0..3 {
+        let _ = x2r.clone().matmul(wr.clone().transpose());
+    }
+    Tensor::<B, 1>::zeros([1], &device).into_scalar();
+    let bu = t0.elapsed().as_secs_f64() / 3.0 * 1000.0;
+    println!("[16] gemm_abt_base_fc1        : cu={cu:7.2} burn={bu:7.2} ms/chunk");
+    // [17] 噪声第一步：x (T,n,in)@B'^T —— cuBLAS 批在中间（不拷贝）vs burn（先拷贝）。
+    let cu = time_ms3(true, 3, || hyperscalees::cublas::batched_gemm_bt(&xr, &br, &device));
+    let t0 = Instant::now();
+    let _ = xp.clone().matmul(br2.clone()); // 预热
+    let t0 = Instant::now();
+    for _ in 0..3 {
+        let _ = xp.clone().matmul(br2.clone());
+    }
+    Tensor::<B, 1>::zeros([1], &device).into_scalar();
+    let bu = t0.elapsed().as_secs_f64() / 3.0 * 1000.0;
+    println!("[17] batched_bt_fc1           : cu={cu:7.2} burn={bu:7.2} ms/chunk");
+    // [17b] 同 [17] 但输入先 permute 为 (n,T,in) 连续（每批连续）。
+    let cu = time_ms3(true, 3, || {
+        hyperscalees::cublas::batched_gemm_bt_first(&xp, &br, &device)
+    });
+    println!("[17b] batched_bt_fc1_first    : cu={cu:7.2} ms/chunk");
+    // [18] 噪声第二步：y (n,T,r)@A' —— 输入为 batched_gemm_bt 的转置视图。
+    let yv = hyperscalees::cublas::batched_gemm_bt(&xr, &br, &device);
+    let cu = time_ms3(true, 3, || hyperscalees::cublas::batched_gemm(&yv, &ar, &device));
+    println!("[18] batched_gemm_fc1_view    : cu={cu:7.2} ms/chunk");
+    // [19] einsum fc1：gemm_atb (384000,32)@(384000,784)。
+    let a_half = ar.clone().slice([0..nch / 2, 0..rk, 0..a]);
+    let f2: Tensor<B, 1> =
+        Tensor::random([nch / 2], Distribution::Uniform(0.5, 1.5), &device);
+    let a_w = a_half.clone() * f2.reshape([nch / 2, 1, 1]);
+    let a_stack = Tensor::cat(vec![a_w, a_half], 2).reshape([nch / 2 * rk, 2 * a]);
+    let b_stack = br.clone().slice([0..nch / 2, 0..rk, 0..b]).reshape([nch / 2 * rk, b]);
+    let cu = time_ms(true, 3, || {
+        hyperscalees::cublas::gemm_atb(&a_stack, &b_stack, &device).sum()
+    });
+    let t0 = Instant::now();
+    for _ in 0..3 {
+        let _ = a_stack
+            .clone()
+            .transpose()
+            .matmul(b_stack.clone()); // (m,k)@(k,n)
+    }
+    Tensor::<B, 1>::zeros([1], &device).into_scalar();
+    let bu = t0.elapsed().as_secs_f64() / 3.0 * 1000.0;
+    println!("[19] einsum_gemm_fc1          : cu={cu:7.2} burn={bu:7.2} ms/chunk");
+    // [20] 噪声生成 fc1（反对称内核）：B' (12000,64,784) + A' (12000,64,16)。
+    let t0 = Instant::now();
+    for _ in 0..3 {
+        let _ = hyperscalees::cublas::gen_lora_noise_antipodal(nch, rk, a, b, 0.025, &device);
+    }
+    Tensor::<B, 1>::zeros([1], &device).into_scalar();
+    let g1 = t0.elapsed().as_secs_f64() / 3.0 * 1000.0;
+    println!("[20] antipodal_gen_fc1        : {g1:7.2} ms/chunk");
+    // [21] 完整 fc1 噪声线性层（base+bt+gemm 全 cuBLAS）。
+    let cu = time_ms3(true, 3, || {
+        let base = hyperscalees::cublas::gemm_abt(&x2r.clone(), &wr, &device)
+            .reshape([t8, nch, a]);
+        let y = hyperscalees::cublas::batched_gemm_bt(&xr, &br, &device);
+        let z = hyperscalees::cublas::batched_gemm(&y, &ar, &device);
+        base + z.swap_dims(0, 1)
+    });
+    println!("[21] lora_linear_fc1_cublas   : cu={cu:7.2} ms/chunk");
 }

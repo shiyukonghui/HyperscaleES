@@ -23,6 +23,7 @@ use cubecl::device_handle::DeviceHandle;
 use cubecl::server::Binding;
 use cubecl::stream_id::StreamId;
 use cubecl::Runtime;
+use hyperscalees_models::snn::TrainableVthSnn;
 
 /// 服务器类型（vendored cubecl-cuda 的 `CudaServer`，经 `Runtime::Server` 关联类型可达）。
 type Server = <CudaRuntime as Runtime>::Server;
@@ -53,14 +54,20 @@ fn state(device: &CudaDevice) -> &'static CublasState {
             cudarc::driver::result::ctx::set_current(ctx).expect("设置 CUDA 上下文失败");
         }
         let handle = cudarc::cublas::result::create_handle().expect("创建 cuBLAS handle 失败");
-        // cudarc 的 cublas sys 是独立 bindgen 生成的不透明类型，与 driver 的
-        // CUstream_st 布局一致，直接转换。
+        // 纯 fp32 数学模式（禁用 TF32）：与 burn/cubecl 的 fp32 matmul 精度对齐，
+        // 避免 k=784 长归约下 ~1e-3 相对误差（实测 gemm 校验 maxdiff 1e-2 -> 0）。
         unsafe {
-            cudarc::cublas::result::set_stream(
+            let status = cudarc::cublas::sys::cublasSetMathMode(
                 handle,
-                stream as *mut cudarc::cublas::sys::CUstream_st,
-            )
-            .expect("cuBLAS 绑定 stream 失败");
+                cudarc::cublas::sys::cublasMath_t::CUBLAS_DEFAULT_MATH,
+            );
+            assert_eq!(
+                status,
+                cudarc::cublas::sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS,
+                "设置 cuBLAS 数学模式失败"
+            );
+            cudarc::cublas::result::set_stream(handle, stream as *mut cudarc::cublas::sys::CUstream_st)
+                .expect("cuBLAS 绑定 stream 失败");
         }
         CublasState { handle, ctx }
     })
@@ -131,6 +138,345 @@ pub fn gemm_atb(a: &Tensor<Cuda, 2>, b: &Tensor<Cuda, 2>, device: &CudaDevice) -
     out.transpose()
 }
 
+/// `C = A @ B^T`：`A` (m, k)、`B` (n, k) 行主序 → 返回 (m, n)。
+///
+/// 前向 base matmul 用（`xp @ w^T`）：B 直接传权重 `w (a, in)`，**无需转置**——
+/// 避免 burn 的 `transpose().reshape()` 对方阵不拷贝（strides 变 (1, k)）的坑。
+/// transa=T（A 行主序 (m,k) = (k,m) 列主序）、transb=N（B 行主序 (n,k) =
+/// (k,n) 列主序，op(B)=B^T）。
+pub fn gemm_abt(
+    a: &Tensor<Cuda, 2>,
+    b: &Tensor<Cuda, 2>,
+    device: &CudaDevice,
+) -> Tensor<Cuda, 2> {
+    let [m, k] = a.dims();
+    let [n, k2] = b.dims();
+    assert_eq!(k, k2, "gemm_abt 的 k 维必须一致：{k} vs {k2}");
+    let st = state(device);
+    let ca = as_cube(a);
+    let cb = as_cube(b);
+    let out: Tensor<Cuda, 2> = Tensor::empty([n, m], device);
+    let co = as_cube(&out);
+    let pa = raw_ptr(&ca, device);
+    let pb = raw_ptr(&cb, device);
+    let pc = raw_ptr(&co, device);
+    let sa = ca.meta.strides()[0] as i32;
+    let sb = cb.meta.strides()[0] as i32;
+    let sc = co.meta.strides()[0] as i32;
+    unsafe {
+        cudarc::driver::result::ctx::set_current(st.ctx).expect("设置 CUDA 上下文失败");
+        let alpha = 1.0f32;
+        let beta = 0.0f32;
+        cudarc::cublas::result::sgemm(
+            st.handle,
+            cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+            cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+            m as i32,
+            n as i32,
+            k as i32,
+            &alpha,
+            pa as *const f32,
+            sa,
+            pb as *const f32,
+            sb,
+            &beta,
+            pc as *mut f32,
+            sc,
+        )
+        .expect("cublasSgemm 失败");
+    }
+    out.transpose()
+}
+
+/// `C = A @ B`：`A` (m, k)、`B` (k, n) 行主序（strided 支持）→ 返回 (m, n)。
+///
+/// 与 [`gemm_atb`] 的转置约定相反：transa=T / transb=T（A (m,k) 行主序 =
+/// (k,m) 列主序，op(A)=A；B 同理），输出同样以 (n, m) 行主序承载 C^T 后转置。
+pub fn gemm(a: &Tensor<Cuda, 2>, b: &Tensor<Cuda, 2>, device: &CudaDevice) -> Tensor<Cuda, 2> {
+    let [m, k] = a.dims();
+    let [k2, n] = b.dims();
+    assert_eq!(k, k2, "gemm 的 k 维必须一致：{k} vs {k2}");
+    let st = state(device);
+    let ca = as_cube(a);
+    let cb = as_cube(b);
+    let out: Tensor<Cuda, 2> = Tensor::empty([n, m], device);
+    let co = as_cube(&out);
+    let pa = raw_ptr(&ca, device);
+    let pb = raw_ptr(&cb, device);
+    let pc = raw_ptr(&co, device);
+    let sa = ca.meta.strides()[0] as i32;
+    let sb = cb.meta.strides()[0] as i32;
+    let sc = co.meta.strides()[0] as i32;
+    unsafe {
+        cudarc::driver::result::ctx::set_current(st.ctx).expect("设置 CUDA 上下文失败");
+        let alpha = 1.0f32;
+        let beta = 0.0f32;
+        cudarc::cublas::result::sgemm(
+            st.handle,
+            cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+            cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+            m as i32,
+            n as i32,
+            k as i32,
+            &alpha,
+            pa as *const f32,
+            sa,
+            pb as *const f32,
+            sb,
+            &beta,
+            pc as *mut f32,
+            sc,
+        )
+        .expect("cublasSgemm 失败");
+    }
+    out.transpose()
+}
+
+/// 批量 `y = x @ B^T`：`x` (m, n, k)（**批在中间维**，如 (T, n, in)）、
+/// `B` (n, r, k) 行主序 → (n, m, r)。
+///
+/// 每批：op(A) = X_n（stored (k,m) 列主序，transa=T）、op(B) = B_n^T
+/// （stored (k,r) 列主序，transb=N）；C (m, r) 列主序，以 (n, r, m) 行主序承载
+/// C^T 后转置。批维在中间的好处：直接消费 LIF/泊松输出的 (T, n, *) 布局，
+/// 无需 swap/reshape（后者在带 pitch 的张量上会产生畸形 strides）。
+pub fn batched_gemm_bt(
+    x: &Tensor<Cuda, 3>,
+    b: &Tensor<Cuda, 3>,
+    device: &CudaDevice,
+) -> Tensor<Cuda, 3> {
+    let [m, n, k] = x.dims();
+    let [n2, r, k2] = b.dims();
+    assert_eq!((n, k), (n2, k2), "batched_gemm_bt 形状不匹配");
+    let st = state(device);
+    let ca = as_cube(x);
+    let cb = as_cube(b);
+    let out: Tensor<Cuda, 3> = Tensor::empty([n, r, m], device);
+    let co = as_cube(&out);
+    let pa = raw_ptr(&ca, device);
+    let pb = raw_ptr(&cb, device);
+    let pc = raw_ptr(&co, device);
+    // x (m, n, k)：每批矩阵 (m, k) 的 row stride = dim0 stride；批间 stride = dim1 stride。
+    let lda = ca.meta.strides()[0] as i32;
+    let sa = ca.meta.strides()[1] as i32;
+    let ldb = cb.meta.strides()[1] as i32; // 行主序 (r,k) 的 row stride = k（或 pitch）
+    let sb = cb.meta.strides()[0] as i32; // 批间 stride
+    let ldc = co.meta.strides()[1] as i32; // 输出 (n, r, m) 行主序的 row stride
+    let sc = co.meta.strides()[0] as i32; // 输出批间 stride
+    unsafe {
+        cudarc::driver::result::ctx::set_current(st.ctx).expect("设置 CUDA 上下文失败");
+        let alpha = 1.0f32;
+        let beta = 0.0f32;
+        cudarc::cublas::result::sgemm_strided_batched(
+            st.handle,
+            cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+            cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+            m as i32,
+            r as i32,
+            k as i32,
+            &alpha,
+            pa as *const f32,
+            lda,
+            sa as i64,
+            pb as *const f32,
+            ldb,
+            sb as i64,
+            &beta,
+            pc as *mut f32,
+            ldc,
+            sc as i64,
+            n as i32,
+        )
+        .expect("cublasSgemmStridedBatched 失败");
+    }
+    out.transpose()
+}
+
+/// 批量 `y = x @ B^T`（批在第一维，每批连续）：`x` (n, m, k) 行主序连续、
+/// `B` (n, r, k) 行主序连续 → (n, m, r)。与 [`batched_gemm_bt`] 数学一致，
+/// 但输入按批连续（lda = k、sa = m·k），供需要先 permute 输入为 (n, m, *) 的场景
+/// （代价是一次拷贝；批在中间维的 strided 布局在 cuBLAS 上可能显著更慢）。
+pub fn batched_gemm_bt_first(
+    x: &Tensor<Cuda, 3>,
+    b: &Tensor<Cuda, 3>,
+    device: &CudaDevice,
+) -> Tensor<Cuda, 3> {
+    let [n, m, k] = x.dims();
+    let [n2, r, k2] = b.dims();
+    assert_eq!((n, k), (n2, k2), "batched_gemm_bt_first 形状不匹配");
+    let st = state(device);
+    let ca = as_cube(x);
+    let cb = as_cube(b);
+    let out: Tensor<Cuda, 3> = Tensor::empty([n, r, m], device);
+    let co = as_cube(&out);
+    let pa = raw_ptr(&ca, device);
+    let pb = raw_ptr(&cb, device);
+    let pc = raw_ptr(&co, device);
+    let lda = ca.meta.strides()[1] as i32; // 每批 (m,k) 行主序的 row stride = k
+    let sa = ca.meta.strides()[0] as i32; // 批间 stride = m·k
+    let ldb = cb.meta.strides()[1] as i32; // (r,k) 行主序的 row stride = k
+    let sb = cb.meta.strides()[0] as i32; // 批间 stride
+    let ldc = co.meta.strides()[1] as i32;
+    let sc = co.meta.strides()[0] as i32;
+    unsafe {
+        cudarc::driver::result::ctx::set_current(st.ctx).expect("设置 CUDA 上下文失败");
+        let alpha = 1.0f32;
+        let beta = 0.0f32;
+        cudarc::cublas::result::sgemm_strided_batched(
+            st.handle,
+            cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+            cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+            m as i32,
+            r as i32,
+            k as i32,
+            &alpha,
+            pa as *const f32,
+            lda,
+            sa as i64,
+            pb as *const f32,
+            ldb,
+            sb as i64,
+            &beta,
+            pc as *mut f32,
+            ldc,
+            sc as i64,
+            n as i32,
+        )
+        .expect("cublasSgemmStridedBatched 失败");
+    }
+    out.transpose()
+}
+
+/// 批量 `z = y @ A`：`y` (n, m, k) 与 `A` (n, k, l) 均行主序连续 → (n, m, l)。
+///
+/// `y` 支持两种每批布局（按 strides 自动选择）：
+/// - 连续 (n, m, k)（每批 (m,k) 行主序，`strides[1] = k`）：transa=T、lda = strides[1]；
+/// - [`batched_gemm_bt`] 的转置视图（每批 (m,k) 列主序，`strides[1] = 1`、
+///   `strides[2] = m`）：transa=N、lda = strides[2]。
+/// 每批：op(A) = Y_n、op(B) = A_n（stored (l,k) 列主序，transb=T）；C (m, l)
+/// 列主序，以 (n, l, m) 行主序承载 C^T 后转置。用于前向的噪声注入第二步 `z = y @ A'`。
+pub fn batched_gemm(
+    y: &Tensor<Cuda, 3>,
+    a: &Tensor<Cuda, 3>,
+    device: &CudaDevice,
+) -> Tensor<Cuda, 3> {
+    let [n, m, k] = y.dims();
+    let [n2, k2, l] = a.dims();
+    assert_eq!((n, k), (n2, k2), "batched_gemm 形状不匹配");
+    let st = state(device);
+    let ca = as_cube(y);
+    let cb = as_cube(a);
+    let out: Tensor<Cuda, 3> = Tensor::empty([n, l, m], device);
+    let co = as_cube(&out);
+    let pa = raw_ptr(&ca, device);
+    let pb = raw_ptr(&cb, device);
+    let pc = raw_ptr(&co, device);
+    let sa = ca.meta.strides()[0] as i32;
+    let sb = cb.meta.strides()[0] as i32;
+    let sc = co.meta.strides()[0] as i32;
+    // y 每批 (m,k) 矩阵：strides[1]==1 时为列主序（batched_gemm_bt 的转置视图），
+    // 否则为行主序（连续 (n,m,k)）。
+    let (transa, lda) = if ca.meta.strides()[1] == 1 {
+        (
+            cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+            ca.meta.strides()[2] as i32,
+        )
+    } else {
+        (
+            cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+            ca.meta.strides()[1] as i32,
+        )
+    };
+    let ldb = cb.meta.strides()[1] as i32; // 行主序 (k,l) 的 row stride = l
+    // 输出 (n, l, m) 行主序：C (m, l) 列主序的 leading dim = 行主序的 row stride。
+    let ldc = co.meta.strides()[1] as i32;
+    unsafe {
+        cudarc::driver::result::ctx::set_current(st.ctx).expect("设置 CUDA 上下文失败");
+        let alpha = 1.0f32;
+        let beta = 0.0f32;
+        cudarc::cublas::result::sgemm_strided_batched(
+            st.handle,
+            transa,
+            cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+            m as i32,
+            l as i32,
+            k as i32,
+            &alpha,
+            pa as *const f32,
+            lda,
+            sa as i64,
+            pb as *const f32,
+            ldb,
+            sb as i64,
+            &beta,
+            pc as *mut f32,
+            ldc,
+            sc as i64,
+            n as i32,
+        )
+        .expect("cublasSgemmStridedBatched 失败");
+    }
+    out.transpose()
+}
+
+/// 单个线性层的 cuBLAS 批量 LoRA 前向：`x` (T, n, in)（批在中间维）-> (T, n, a)。
+///
+/// 与 [`TrainableVthSnn::forward_batched_lora`] 的 `lora_linear_batched` 数学一致：
+/// - base = x @ w^T：一次 2D GEMM（x 展平 (T·n, in)）；
+/// - y = x @ B'^T（`batched_gemm_bt`，批在中间维，直接消费 (T, n, *) 布局）；
+/// - z = y @ A'（`batched_gemm`）。
+/// 全部走 cuBLAS（同流、无同步）；不 permute 输入（swap+reshape 在带 pitch 的
+/// 张量上会产生畸形 strides）。
+fn lora_linear_cublas(
+    x: &Tensor<Cuda, 3>,                       // (T, n, in)
+    w: &Tensor<Cuda, 2>,                        // (a, in)
+    noise: &(Tensor<Cuda, 3>, Tensor<Cuda, 3>), // (A' (n,r,a), B' (n,r,b))
+    device: &CudaDevice,
+) -> Tensor<Cuda, 3> {                          // (T, n, a)
+    let [t, n, in_dim] = x.dims();
+    let [a, _in] = w.dims();
+    let (a_ra, b_rb) = noise;
+    // base = x @ w^T：B 直接传权重（gemm_abt 内部 transb=N，无需转置）。
+    let base = gemm_abt(&x.clone().reshape([t * n, in_dim]), w, device).reshape([t, n, a]);
+    // 噪声两步：y = x @ B'^T（批在中间维）；z = y @ A'（(n, T, r) 布局）。
+    let y = batched_gemm_bt(x, b_rb, device); // (n, T, r)
+    let z = batched_gemm(&y, a_ra, device); // (n, T, a)
+    base + z.swap_dims(0, 1) // (T, n, a)
+}
+
+/// 前向的 cuBLAS 版（matmul 全走 cuBLAS，LIF 保持 burn），与
+/// [`TrainableVthSnn::forward_batched_lora`] 数学一致：`(T, n, in)` -> `(n, C)`。
+pub fn forward_batched_lora_cublas(
+    model: &TrainableVthSnn,
+    x: Tensor<Cuda, 3>,
+    th1: f32,
+    th2: f32,
+    noise: &[(Tensor<Cuda, 3>, Tensor<Cuda, 3>)],
+    device: &CudaDevice,
+) -> Tensor<Cuda, 2> {
+    use hyperscalees_models::snn::{LifParams, run_lif};
+    let [t, n, _in] = x.dims();
+    let p1 = LifParams { tau_m: model.tau_m, v_th: th1 };
+    let p2 = LifParams { tau_m: model.tau_m, v_th: th2 };
+    // 第 1 层：x (T, n, in) 直接使用（批在中间维，无需 permute）。
+    let cur1 = lora_linear_cublas(&x, &model.fc1.weight, &noise[0], device); // (T, n, h1)
+    let v0_1 = Tensor::<Cuda, 2>::zeros([n, model.fc1.weight.dims()[0]], device);
+    let spikes1 = run_lif(p1, cur1, v0_1); // (T, n, h1)
+    // 第 2 层。
+    let cur2 = lora_linear_cublas(&spikes1, &model.fc2.weight, &noise[1], device); // (T, n, h2)
+    let v0_2 = Tensor::<Cuda, 2>::zeros([n, model.fc2.weight.dims()[0]], device);
+    let spikes2 = run_lif(p2, cur2, v0_2); // (T, n, h2)
+    // 读出：mean rate -> fc3（噪声注入同为 batched GEMM，m=1）-> gain。
+    let rate = spikes2.mean_dim(0).squeeze_dim::<2>(0); // (n, h2)
+    let (a3, b3) = &noise[2];
+    let base3 = gemm_abt(&rate.clone(), &model.fc3.weight, device); // (n, C)
+    let rate_u = rate.clone().unsqueeze_dim::<3>(0); // (1, n, h2) —— 批在中间维
+    let y3 = batched_gemm_bt(&rate_u, b3, device); // (n, 1, r)
+    let z3 = batched_gemm(&y3, a3, device); // (n, 1, C)
+    let logits = base3 + z3.squeeze_dim::<2>(1);
+    let gain = model.out_gain.value.clone().unsqueeze::<2>(); // (1, 1)
+    logits * gain
+}
+
 /// 反对称配对 einsum 的 cuBLAS 版：与 `lora_einsum_pair` 数学完全一致
 /// （`g_raw = Σ_i (f_i + f_{half+i})·A'_i ⊗ B'_i`，`g_ones = 2·Σ_i A'_i ⊗ B'_i`），
 /// 仅把合并 GEMM 从 cubecl matmul 换成 cuBLAS（同流、无同步）。
@@ -161,14 +507,15 @@ pub fn lora_einsum_pair_cublas(
     (g_raw, g_ones)
 }
 
-/// 反对称配对的 LoRA 噪声生成（零拷贝版）：返回 `(A' (n,r,a) 已乘 base_sigma, B' (n,r,b))`。
+/// 反对称配对的 LoRA 噪声生成（半量版）：返回 `(A'_h (n/2,r,a) 已乘 base_sigma, B'_h (n/2,r,b))`。
 ///
-/// 直接调用 vendored cubek-random 的 `random_normal_antipodal` 内核：一次内核调用
-/// 生成完整张量，后半样本是前半的逐位取负（`out[n/2+i] = -out[i]`），**省去旧实现
-/// 的 neg + cat 两次全量拷贝**（fc1 每 chunk 约省 5ms）。A' 用 `std = base_sigma`
-/// 直接生成（等价于旧实现的生成后 mul_scalar，舍入差异 ~1e-7，统计无影响）。
+/// 配对隐含：样本 `n/2+i` 的噪声 = 样本 `i` 的噪声取负（由前向
+/// [`TrainableVthSnn::forward_batched_lora_half`] 与 `lora_einsum_pair_half` 消费方
+/// 施加）。**只生成 n/2 个样本**：fc1 B' 从 2.4GB → 1.2GB，噪声生成阶段实测
+/// ~17ms → ~7ms/chunk（plain 内核；此前「一次内核生成完整配对张量」的反对称内核
+/// 需两次生成或双写流，均更慢）。A' 用 `std = base_sigma` 直接生成。
 ///
-/// 要求 `n/2 · r · b`（及 `n/2 · r · a`）能被 128 整除（本工作负载恒成立）。
+/// 要求 `n` 为偶数（本工作负载恒成立）。
 pub fn gen_lora_noise_antipodal(
     n: usize,
     r: usize,
@@ -179,20 +526,18 @@ pub fn gen_lora_noise_antipodal(
 ) -> (Tensor<Cuda, 3>, Tensor<Cuda, 3>) {
     use cubecl::ir::{ElemType, FloatKind, StorageType};
     let dtype = StorageType::Scalar(ElemType::Float(FloatKind::F32));
+    assert!(n % 2 == 0, "半量噪声生成要求 n 为偶数，实际 {n}");
 
-    let b_t: Tensor<Cuda, 3> = Tensor::empty([n, r, b], device);
-    let cb = as_cube(&b_t);
-    let client = cb.client.clone();
-    let binding = cb.binding();
-    cubek_random::random_normal_antipodal(&client, 0.0, 1.0, binding, dtype)
-        .expect("B' 反对称噪声生成失败");
+    let b_h: Tensor<Cuda, 3> = Tensor::empty([n / 2, r, b], device);
+    let cbh = as_cube(&b_h);
+    let client_h = cbh.client.clone();
+    cubek_random::random_normal(&client_h, 0.0, 1.0, cbh.binding(), dtype)
+        .expect("B' 前半噪声生成失败");
+    let a_h: Tensor<Cuda, 3> = Tensor::empty([n / 2, r, a], device);
+    let cah = as_cube(&a_h);
+    let client_ah = cah.client.clone();
+    cubek_random::random_normal(&client_ah, 0.0, base_sigma, cah.binding(), dtype)
+        .expect("A' 前半噪声生成失败");
 
-    let a_t: Tensor<Cuda, 3> = Tensor::empty([n, r, a], device);
-    let ca = as_cube(&a_t);
-    let client_a = ca.client.clone();
-    let binding_a = ca.binding();
-    cubek_random::random_normal_antipodal(&client_a, 0.0, base_sigma, binding_a, dtype)
-        .expect("A' 反对称噪声生成失败");
-
-    (a_t, b_t)
+    (a_h, b_h)
 }

@@ -511,6 +511,123 @@ impl TrainableVthSnn {
         let gain = self.out_gain.value.clone().unsqueeze::<2>(); // (1, 1)
         logits * gain
     }
+
+    /// 半噪声版批量 LoRA 前向：噪声只存前半（配对隐含），与
+    /// [`TrainableVthSnn::forward_batched_lora`] 数学逐位一致。
+    ///
+    /// `noise` = 3 层 `(A'_h (n/2,r,a) 已乘 sign*base_sigma, B'_h (n/2,r,b))`，配对
+    /// 隐含：样本 `n/2+i` 的噪声 = 样本 `i` 的噪声取负。噪声生成量减半（fc1 B'
+    /// 2.4GB → 1.2GB，实测 gen 阶段 ~17ms → ~7ms/chunk），前向计算不变（两半样本
+    /// 分别对同一半噪声做 batched matmul，双重取负在 `y@A'` 组合中抵消——无需
+    /// 任何取负/拷贝，与全噪声版逐位一致，见 [`lora_linear_batched_half`]）。
+    pub fn forward_batched_lora_half(
+        &self,
+        x: Tensor<B, 3>,                       // (T, n, in)
+        th1: f32,
+        th2: f32,
+        noise: &[(Tensor<B, 3>, Tensor<B, 3>)], // 3 层 (A'_h(n/2,r,a), B'_h(n/2,r,b))
+    ) -> Tensor<B, 2> {                        // (n, C)
+        let [_, n, _] = x.dims();
+        let device = x.device().clone();
+        let p1 = LifParams { tau_m: self.tau_m, v_th: th1 };
+        let p2 = LifParams { tau_m: self.tau_m, v_th: th2 };
+
+        // 第 1 层：半噪声批量 LoRA 线性投影，再 LIF 扫描。
+        let cur1 = lora_linear_batched_half(x, &self.fc1.weight, &noise[0]); // (T, n, h1)
+        let v0_1 = Tensor::<B, 2>::zeros([n, self.fc1.weight.dims()[0]], &device);
+        let spikes1 = run_lif(p1, cur1, v0_1); // (T, n, h1)
+
+        // 第 2 层。
+        let cur2 = lora_linear_batched_half(spikes1, &self.fc2.weight, &noise[1]); // (T, n, h2)
+        let v0_2 = Tensor::<B, 2>::zeros([n, self.fc2.weight.dims()[0]], &device);
+        let spikes2 = run_lif(p2, cur2, v0_2); // (T, n, h2)
+
+        // 读出：时间轴上的平均发放率 -> fc3（噪声注入同为 batched matmul，m=1）-> gain。
+        let rate = spikes2.mean_dim(0).squeeze_dim::<2>(0); // (n, h2)
+        let (a3, b3) = &noise[2];
+        let half = n / 2;
+        let h2 = rate.dims()[1];
+        let b3_br = b3.clone().swap_dims(1, 2); // (n/2, h2, r) 列主序视图
+        let base3 = rate.clone().matmul(self.fc3.weight.clone().transpose()); // (n, C)
+        let rate1 = rate.clone().slice([0..half, 0..h2]);
+        let rate2 = rate.clone().slice([half..n, 0..h2]);
+        let y1 = rate1
+            .unsqueeze_dim::<3>(1)
+            .matmul(b3_br.clone()) // (n/2,1,h2)@(n/2,h2,r) -> (n/2,1,r)
+            .squeeze_dim::<2>(1);
+        let y2 = rate2
+            .unsqueeze_dim::<3>(1)
+            .matmul(b3_br) // (n/2,1,h2)@(n/2,h2,r) -> (n/2,1,r)
+            .squeeze_dim::<2>(1);
+        let z1 = y1
+            .unsqueeze_dim::<3>(1)
+            .matmul(a3.clone()) // (n/2,1,r)@(n/2,r,C) -> (n/2,1,C)
+            .squeeze_dim::<2>(1);
+        let z2 = y2
+            .unsqueeze_dim::<3>(1)
+            .matmul(a3.clone()) // (n/2,1,r)@(n/2,r,C) -> (n/2,1,C)
+            .squeeze_dim::<2>(1);
+        let logits = base3 + Tensor::cat(vec![z1, z2], 0); // (n, C)
+        let gain = self.out_gain.value.clone().unsqueeze::<2>(); // (1, 1)
+        logits * gain
+    }
+}
+
+/// 单层批量 LoRA 线性前向（半噪声版）：(T,n,in) -> (T,n,a)。
+///
+/// 噪声只存前半 `(A'_h (n/2,r,a), B'_h (n/2,r,b))`；配对隐含：样本 `n/2+i` 的
+/// 噪声为样本 `i` 的取负。数学推导（`y = x @ B'^T`、`z = y @ A'`）：
+///
+/// ```text
+/// y[n/2+i]  = x[n/2+i] @ (-B'_h[i])^T = -(x[n/2+i] @ B'_h[i]^T)
+/// z[n/2+i]  = y[n/2+i] @ (-A'_h[i])   = (x[n/2+i] @ B'_h[i]^T) @ A'_h[i]
+/// ```
+///
+/// 双重取负抵消 → 两半样本各自对同一 `B'_h`/`A'_h` 做 batched matmul 后拼接即可，
+/// **无需任何取负/拷贝**，与全噪声版逐位一致（IEEE 符号精确、累加相同）。
+/// - base：输入展平 (T·n, in) 一次 2D GEMM（`x @ w^T`）；
+/// - 噪声：两半各一次 `(n/2,T,in) @ (n/2,in,r)` 与 `(n/2,T,r) @ (n/2,r,a)` 3D
+///   batched matmul（rhs 为 B' 的列主序视图 / A' 连续张量）。
+fn lora_linear_batched_half(
+    x: Tensor<B, 3>,                       // (T, n, in)
+    w: &Tensor<B, 2>,                      // (a, in)
+    noise: &(Tensor<B, 3>, Tensor<B, 3>),  // (A'_h(n/2,r,a), B'_h(n/2,r,b))
+) -> Tensor<B, 3> {                        // (T, n, a)
+    let [t, n, in_dim] = x.dims();
+    let [a, _in_dim] = w.dims();
+    let half = n / 2;
+    assert_eq!(
+        noise.1.dims()[0],
+        half,
+        "半噪声 B' 要求 n/2 行，实际 {}（n={n}）",
+        noise.1.dims()[0]
+    );
+    let (a_ra, b_rb) = noise;
+    // B' (n/2,r,b) -> (n/2,b,r) 列主序视图（k 维 stride 1，cubecl matmul 原生支持）。
+    let b_br = b_rb.clone().swap_dims(1, 2);
+    // 输入按样本对半切分后各连续化（各一次小拷贝，fc1 每半约 18.8MB）。
+    let xp1 = x
+        .clone()
+        .slice([0..t, 0..half, 0..in_dim])
+        .swap_dims(0, 1)
+        .reshape([half, t, in_dim]);
+    let xp2 = x
+        .clone()
+        .slice([0..t, half..n, 0..in_dim])
+        .swap_dims(0, 1)
+        .reshape([half, t, in_dim]);
+    // base 全量一次 2D GEMM（行序按 (T,n) 展平，reshape 还原）。
+    let base = x
+        .clone()
+        .reshape([t * n, in_dim])
+        .matmul(w.clone().transpose())
+        .reshape([t, n, a]); // (T,n,a)
+    let y1 = xp1.matmul(b_br.clone()); // (half,T,in)@(half,in,r) -> (half,T,r)
+    let y2 = xp2.matmul(b_br);
+    let z1 = y1.matmul(a_ra.clone()); // (half,T,r)@(half,r,a) -> (half,T,a)
+    let z2 = y2.matmul(a_ra.clone());
+    let z = Tensor::cat(vec![z1, z2], 0); // (n,T,a)
+    base + z.swap_dims(0, 1) // (T, n, a)（供 run_lif 逐时间步切片）
 }
 
 /// 单层批量 LoRA 线性前向：(T,n,in) -> (T,n,a)，供 [`TrainableVthSnn::forward_batched_lora`] 使用。

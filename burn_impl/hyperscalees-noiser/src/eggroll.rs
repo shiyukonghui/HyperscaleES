@@ -806,6 +806,49 @@ pub fn lora_einsum_pair(
     (g_raw, g_ones)
 }
 
+/// 反对称配对版 raw+ones 合并 einsum（半噪声版，训练热路径专用）。
+///
+/// 与 [`lora_einsum_pair`] 数学完全一致，但噪声只存前半（配对隐含）：
+/// `A'[half+i] = -A'[i]`、`B'[half+i] = -B'[i]` 由消费方约定，这里直接消费
+/// `(half, r, a)` / `(half, r, b)` 张量，**无需切片**。噪声生成量减半
+/// （fc1 B' 2.4GB → 1.2GB，gen 阶段 ~17ms → ~7ms/chunk）。
+///
+/// ```text
+/// g_raw  = Σ_n f_n·(A'_n ⊗ B'_n) = Σ_{i<half} A''_i ⊗ B'_i，A''_i = (f_i + f_{half+i})·A'_i
+/// g_ones = Σ_n (A'_n ⊗ B'_n)     = 2·Σ_{i<half} A'_i ⊗ B'_i
+/// ```
+///
+/// 两者共享同一 `B_half`：把 `[A''; A_half]` 沿 a 轴拼接为 `(half, r, 2a)`，一次
+/// 2D GEMM `(2a, half·r) @ (half·r, b)` 同时产出 `g_raw`（上半行）与 `g_ones'`
+/// （下半行，末尾 ×2）。
+pub fn lora_einsum_pair_half(
+    a_half: &Tensor<B, 3>,   // (half, r, a)，A 已乘 sign*base_sigma（配对隐含）
+    b_half: &Tensor<B, 3>,   // (half, r, b)（配对隐含）
+    scores: &Tensor<B, 1>,   // (n,)
+    device: &Device<B>,
+) -> (Tensor<B, 2>, Tensor<B, 2>) {
+    let [half, r, a] = a_half.dims();
+    let b = b_half.dims()[2];
+    let n = scores.dims()[0];
+    let _ = device;
+    assert_eq!(n, 2 * half, "半 einsum 要求 scores 长度 = 2×half，实际 {n} vs {half}");
+    // g_raw 的加权 A：A''[i] = (f_i + f_{half+i})·A'_i。
+    let f_pair = scores
+        .clone()
+        .slice([0..half])
+        .add(scores.clone().slice([half..n])); // (half,)
+    let a_w = a_half.clone() * f_pair.reshape([half, 1, 1]); // (half, r, a)
+    // 拼接 + 展平（cat 输出连续；b_half 连续，reshape 零拷贝）。
+    let a_stack = Tensor::cat(vec![a_w, a_half.clone()], 2); // (half, r, 2a)
+    let a_flat = a_stack.reshape([half * r, 2 * a]); // 连续
+    let b_flat = b_half.clone().reshape([half * r, b]); // 连续
+    let g = a_flat.transpose().matmul(b_flat); // (2a, b)
+    // 上半行 = g_raw；下半行 = g_ones'（×2 得 g_ones）。
+    let g_raw = g.clone().slice([0..a, 0..b]).reshape([a, b]);
+    let g_ones = g.slice([a..2 * a, 0..b]).reshape([a, b]).mul_scalar(2.0);
+    (g_raw, g_ones)
+}
+
 /// 反对称配对版 raw-only 半 K einsum：`g_raw = Σ_i (f_i + f_{half+i})·A'_i ⊗ B'_i`。
 ///
 /// 用于噪声已缓存（跨 epoch 固定）的层：ones 项同时被缓存后，每 epoch 只需这一个
