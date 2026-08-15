@@ -717,43 +717,140 @@ pub fn accumulated_update_cached(
 // （einsum over 全 1），最后一次性仿射修正 + solver 更新——数学上与两阶段
 // `accumulated_update` 严格一致（测试 `inline_affine_matches_accumulated_two_phase` 验证）。
 
-/// `einsum('nir,njr->ij')` 的 raw 加权版：`Σ_i f_i·(A_i @ B_i^T)`。
+/// `einsum('nri,nrj->ij')` 的 raw 加权版：`Σ_i f_i·(A_i @ B_i^T)`。
 ///
-/// 用 2D gemm 等价式（A/B 按相同 (n,r) 顺序展平后转置相乘），避免 CubeCL 对
-/// 3D 批量 matmul 的差性能与 (n,a,b) 大中间张量。
+/// A' 与 B' 均按 `(n, r, *)` 连续布局存储（`A'[n,r,i] = A[n,i,r]` 且 A' 已乘
+/// sign*base_sigma；`B'[n,r,j] = B[n,j,r]`），因此展平 `reshape([n*r, *])` 为零拷贝
+/// 视图，2D GEMM `(a, n·r) @ (n·r, b)` 即 `Σ_{n,r} A[n,i,r]·B[n,j,r]`。
+/// `scores` 为 GPU 张量（训练热路径不再把 fitness 搬回 CPU）。
 pub fn lora_einsum_raw(
-    a_t: &Tensor<B, 3>,     // (n, a, r)，A 已乘 sign*base_sigma
-    b_t: &Tensor<B, 3>,     // (n, b, r)
-    scores: &[f32],         // (n,)
+    a_t: &Tensor<B, 3>,     // (n, r, a)，A 已乘 sign*base_sigma
+    b_t: &Tensor<B, 3>,     // (n, r, b)
+    scores: &Tensor<B, 1>,  // (n,)
     device: &Device<B>,
 ) -> Tensor<B, 2> {
-    let [n, a, r] = a_t.dims();
-    let scores_t = Tensor::<B, 1>::from_data(scores, device);
-    let a_w = a_t.clone() * scores_t.reshape([n, 1, 1]); // (n,a,r) 按样本加权
-    let a_flat = a_w.swap_dims(1, 2).reshape([n * r, a]); // (n*r, a)
-    let b_flat = b_t.clone().swap_dims(1, 2).reshape([n * r, b_t.dims()[1]]); // (n*r, b)
+    let [n, r, a] = a_t.dims();
+    let _ = device;
+    let scores_t = scores.clone().reshape([n, 1, 1]); // (n,1,1)
+    let a_w = a_t.clone() * scores_t; // (n,r,a) 按样本加权
+    let a_flat = a_w.reshape([n * r, a]); // 连续，零拷贝
+    let b_flat = b_t.clone().reshape([n * r, b_t.dims()[2]]); // 连续，零拷贝
     a_flat.transpose().matmul(b_flat) // (a, b)
 }
 
-/// `einsum('nir,njr->ij')` 的 unweighted 版：`Σ_i (A_i @ B_i^T)`（仿射修正的 ones 项）。
+/// `einsum('nri,nrj->ij')` 的 unweighted 版：`Σ_i (A_i @ B_i^T)`（仿射修正的 ones 项）。
 pub fn lora_einsum_ones(a_t: &Tensor<B, 3>, b_t: &Tensor<B, 3>, device: &Device<B>) -> Tensor<B, 2> {
-    let [n, a, r] = a_t.dims();
-    let a_flat = a_t.clone().swap_dims(1, 2).reshape([n * r, a]); // (n*r, a)
-    let b_flat = b_t.clone().swap_dims(1, 2).reshape([n * r, b_t.dims()[1]]); // (n*r, b)
+    let [n, r, a] = a_t.dims();
+    let _ = device;
+    let a_flat = a_t.clone().reshape([n * r, a]); // 连续，零拷贝
+    let b_flat = b_t.clone().reshape([n * r, b_t.dims()[2]]); // 连续，零拷贝
     a_flat.transpose().matmul(b_flat) // (a, b)
 }
 
-/// dense（FULL）raw 加权版：`Σ_i f_i·noise_i`（noise 形状 (n,a,b)）。
-pub fn dense_einsum_raw(noise: &Tensor<B, 3>, scores: &[f32], device: &Device<B>) -> Tensor<B, 2> {
+/// dense（FULL）raw 加权版：`Σ_i f_i·noise_i`（noise 形状 (n,a,b)；scores 为 GPU 张量）。
+pub fn dense_einsum_raw(noise: &Tensor<B, 3>, scores: &Tensor<B, 1>, device: &Device<B>) -> Tensor<B, 2> {
     let n = noise.dims()[0];
-    let scores_t = Tensor::<B, 1>::from_data(scores, device);
-    let weighted = noise.clone() * scores_t.reshape([n, 1, 1]); // (n,a,b)
+    let _ = device;
+    let scores_t = scores.clone().reshape([n, 1, 1]);
+    let weighted = noise.clone() * scores_t; // (n,a,b)
     weighted.sum_dim(0).squeeze_dim::<2>(0) // (a,b)
 }
 
 /// dense（FULL）ones 版：`Σ_i noise_i`（仿射修正的 ones 项）。
-pub fn dense_einsum_ones(noise: &Tensor<B, 3>, device: &Device<B>) -> Tensor<B, 2> {
+pub fn dense_einsum_ones(noise: &Tensor<B, 3>, _device: &Device<B>) -> Tensor<B, 2> {
     noise.clone().sum_dim(0).squeeze_dim::<2>(0) // (a,b)
+}
+
+/// 反对称配对版 raw+ones 合并 einsum（训练热路径专用）。
+///
+/// 前提：`A'[half+i] = -A'[i]`、`B'[half+i] = -B'[i]`（见 `gen_gpu_lora_noise` 的
+/// 反对称配对）。此时配对消去后半样本：
+///
+/// ```text
+/// g_raw  = Σ_n f_n·(A'_n ⊗ B'_n) = Σ_{i<half} A''_i ⊗ B'_i，A''_i = (f_i + f_{half+i})·A'_i
+/// g_ones = Σ_n (A'_n ⊗ B'_n)     = 2·Σ_{i<half} A'_i ⊗ B'_i
+/// ```
+///
+/// 两者共享同一 `B_half`：把 `[A''; A_half]` 沿 a 轴拼接为 `(half, r, 2a)`，一次
+/// 2D GEMM `(2a, half·r) @ (half·r, b)` 同时产出 `g_raw`（上半行）与 `g_ones'`
+/// （下半行，末尾 ×2）。相比两个全 K GEMM（fc1 各 ~21ms），**FLOPs 恰好减半**
+/// （半 K × 单次 M=2a 输出），且 B 只读一次。
+pub fn lora_einsum_pair(
+    a_t: &Tensor<B, 3>,     // (n, r, a)，A 已乘 sign*base_sigma，反对称配对
+    b_t: &Tensor<B, 3>,     // (n, r, b)，反对称配对
+    scores: &Tensor<B, 1>,  // (n,)
+    device: &Device<B>,
+) -> (Tensor<B, 2>, Tensor<B, 2>) {
+    let [n, r, a] = a_t.dims();
+    let b = b_t.dims()[2];
+    let _ = device;
+    assert!(n % 2 == 0, "配对 einsum 要求 n 为偶数，实际 {n}");
+    let half = n / 2;
+    // 前半（连续切片视图，零拷贝）。
+    let a_half = a_t.clone().slice([0..half, 0..r, 0..a]); // (half, r, a)
+    let b_half = b_t.clone().slice([0..half, 0..r, 0..b]); // (half, r, b)
+    // g_raw 的加权 A：A''[i] = (f_i + f_{half+i})·A'_i。
+    let f_pair = scores
+        .clone()
+        .slice([0..half])
+        .add(scores.clone().slice([half..n])); // (half,)
+    let a_w = a_half.clone() * f_pair.reshape([half, 1, 1]); // (half, r, a)
+    // 拼接 + 展平（cat 输出连续；b_half 为连续切片，reshape 零拷贝）。
+    let a_stack = Tensor::cat(vec![a_w, a_half], 2); // (half, r, 2a)
+    let a_flat = a_stack.reshape([half * r, 2 * a]); // 连续
+    let b_flat = b_half.reshape([half * r, b]); // 连续视图
+    let g = a_flat.transpose().matmul(b_flat); // (2a, b)
+    // 上半行 = g_raw；下半行 = g_ones'（×2 得 g_ones）。
+    let g_raw = g.clone().slice([0..a, 0..b]).reshape([a, b]);
+    let g_ones = g.slice([a..2 * a, 0..b]).reshape([a, b]).mul_scalar(2.0);
+    (g_raw, g_ones)
+}
+
+/// 反对称配对版 raw-only 半 K einsum：`g_raw = Σ_i (f_i + f_{half+i})·A'_i ⊗ B'_i`。
+///
+/// 用于噪声已缓存（跨 epoch 固定）的层：ones 项同时被缓存后，每 epoch 只需这一个
+/// `(a, half·r) @ (half·r, b)` GEMM（约 [pair 版] 的一半 FLOPs）。
+pub fn lora_einsum_raw_halfk(
+    a_t: &Tensor<B, 3>,     // (n, r, a)，A 已乘 sign*base_sigma，反对称配对
+    b_t: &Tensor<B, 3>,     // (n, r, b)，反对称配对
+    scores: &Tensor<B, 1>,  // (n,)
+    device: &Device<B>,
+) -> Tensor<B, 2> {
+    let [n, r, a] = a_t.dims();
+    let b = b_t.dims()[2];
+    let _ = device;
+    assert!(n % 2 == 0, "配对 einsum 要求 n 为偶数，实际 {n}");
+    let half = n / 2;
+    let a_half = a_t.clone().slice([0..half, 0..r, 0..a]); // 连续视图
+    let b_half = b_t.clone().slice([0..half, 0..r, 0..b]); // 连续视图
+    let f_pair = scores
+        .clone()
+        .slice([0..half])
+        .add(scores.clone().slice([half..n])); // (half,)
+    let a_w = a_half * f_pair.reshape([half, 1, 1]); // (half, r, a)
+    let a_flat = a_w.reshape([half * r, a]); // 连续
+    let b_flat = b_half.reshape([half * r, b]); // 连续视图
+    a_flat.transpose().matmul(b_flat) // (a, b)
+}
+
+/// 反对称配对版 ones-only 半 K einsum：`g_ones = 2·Σ_{i<half} A'_i ⊗ B'_i`。
+///
+/// 噪声跨 epoch 固定时可只算一次并缓存（每 epoch 省掉一半 einsum FLOPs）。
+pub fn lora_ones_halfk(
+    a_t: &Tensor<B, 3>,     // (n, r, a)，A 已乘 sign*base_sigma，反对称配对
+    b_t: &Tensor<B, 3>,     // (n, r, b)，反对称配对
+    device: &Device<B>,
+) -> Tensor<B, 2> {
+    let [n, r, a] = a_t.dims();
+    let b = b_t.dims()[2];
+    let _ = device;
+    assert!(n % 2 == 0, "配对 einsum 要求 n 为偶数，实际 {n}");
+    let half = n / 2;
+    let a_half = a_t.clone().slice([0..half, 0..r, 0..a]); // 连续视图
+    let b_half = b_t.clone().slice([0..half, 0..r, 0..b]); // 连续视图
+    let a_flat = a_half.reshape([half * r, a]); // 连续
+    let b_flat = b_half.reshape([half * r, b]); // 连续视图
+    a_flat.transpose().matmul(b_flat).mul_scalar(2.0) // (a, b)
 }
 
 /// 仿射修正 + 尺度恢复：最终 solver 输入梯度
@@ -1232,24 +1329,26 @@ mod tests {
 
     #[test]
     fn lora_einsum_helpers_match_hand_computed() {
-        // 小规模手算：A (2,a=2,r=2)、B (2,b=3,r=2)、scores [0.5, -1.0]。
+        // 小规模手算：A' (2, r=2, a=2)、B' (2, r=2, b=3)、scores [0.5, -1.0]。
+        // 新布局 (n,r,*)：A'[n,r,i] = A[n,i,r]，B'[n,r,j] = B[n,j,r]。
         let a_t = Tensor::<B, 3>::from_data(
             [
                 [[1.0_f32, 2.0], [3.0, 4.0]],
                 [[5.0, 6.0], [7.0, 8.0]],
             ],
             &device(),
-        ); // (2, 2, 2)
+        ); // (2, 2, 2) = (n, r, a)
         let b_t = Tensor::<B, 3>::from_data(
             [
-                [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
-                [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]],
+                [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                [[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]],
             ],
             &device(),
-        ); // (2, 3, 2)
-        let scores = [0.5_f32, -1.0_f32];
+        ); // (2, 2, 3) = (n, r, b)
+        let scores = Tensor::<B, 1>::from_data([0.5_f32, -1.0], &device());
 
-        // 手算 einsum('nir,njr->ij')：Σ_n Σ_r A[n,i,r]·B[n,j,r]。
+        // 手算 einsum('nir,njr->ij')：Σ_n Σ_r A[n,i,r]·B[n,j,r]；
+        // 按 (n,r,*) 布局即 Σ_n Σ_r A'[n,r,i]·B'[n,r,j]。
         let raw = lora_einsum_raw(&a_t, &b_t, &scores, &device());
         let ones = lora_einsum_ones(&a_t, &b_t, &device());
         let mut exp_raw = vec![0.0_f32; 6];
@@ -1258,10 +1357,10 @@ mod tests {
             for i in 0..2 {
                 for j in 0..3 {
                     for r in 0..2 {
-                        let v = a_t.clone().slice([n..n + 1, i..i + 1, r..r + 1]).into_scalar();
-                        let w = b_t.clone().slice([n..n + 1, j..j + 1, r..r + 1]).into_scalar();
+                        let v = a_t.clone().slice([n..n + 1, r..r + 1, i..i + 1]).into_scalar();
+                        let w = b_t.clone().slice([n..n + 1, r..r + 1, j..j + 1]).into_scalar();
                         exp_ones[i * 3 + j] += v * w;
-                        exp_raw[i * 3 + j] += scores[n] * v * w;
+                        exp_raw[i * 3 + j] += scores.clone().slice([n..n + 1]).into_scalar() * v * w;
                     }
                 }
             }
@@ -1278,12 +1377,83 @@ mod tests {
     fn dense_einsum_helpers_match_hand_computed() {
         // 小规模手算：noise (2, 1, 1)、scores [2.0, 3.0]。
         let noise = Tensor::<B, 3>::from_data([[[4.0_f32]], [[-1.0]]], &device()); // (2,1,1)
-        let scores = [2.0_f32, 3.0_f32];
+        let scores = Tensor::<B, 1>::from_data([2.0_f32, 3.0], &device());
         // Σ f_i·noise_i = 2*4 + 3*(-1) = 5；Σ noise_i = 3。
         let raw = dense_einsum_raw(&noise, &scores, &device());
         let ones = dense_einsum_ones(&noise, &device());
         assert!((to_vec(raw)[0] - 5.0).abs() < 1e-5);
         assert!((to_vec(ones)[0] - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn lora_einsum_pair_matches_plain_raw_and_ones() {
+        // 反对称配对版（合并单 GEMM）必须与全量 lora_einsum_raw/lora_einsum_ones
+        // 逐位一致（容差 1e-4，仅浮点累加顺序差异）。
+        let n = 4usize;
+        let r = 3usize;
+        let a = 2usize;
+        let b = 3usize;
+        // 构造反对称配对噪声：A'[half+i] = -A'[i]，B'[half+i] = -B'[i]。
+        let a_half = Tensor::<B, 3>::from_data(
+            [
+                [[1.0_f32, 2.0], [3.0, 4.0], [5.0, 6.0]],
+                [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]],
+            ],
+            &device(),
+        ); // (2, 3, 2) = (half, r, a)
+        let b_half = Tensor::<B, 3>::from_data(
+            [
+                [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+                [[10.0, 11.0, 12.0], [13.0, 14.0, 15.0], [16.0, 17.0, 18.0]],
+            ],
+            &device(),
+        ); // (2, 3, 3) = (half, r, b)
+        let a_t = Tensor::cat(vec![a_half.clone(), a_half.neg()], 0); // (4, 3, 2)
+        let b_t = Tensor::cat(vec![b_half.clone(), b_half.neg()], 0); // (4, 3, 3)
+        let scores = Tensor::<B, 1>::from_data([0.5_f32, -1.0, 2.0, 0.25], &device());
+
+        let (g_raw, g_ones) = lora_einsum_pair(&a_t, &b_t, &scores, &device());
+        let exp_raw = lora_einsum_raw(&a_t, &b_t, &scores, &device());
+        let exp_ones = lora_einsum_ones(&a_t, &b_t, &device());
+
+        let gr = to_vec(g_raw);
+        let er = to_vec(exp_raw);
+        let go = to_vec(g_ones);
+        let eo = to_vec(exp_ones);
+        for k in 0..gr.len() {
+            assert!(
+                (gr[k] - er[k]).abs() < 1e-4,
+                "pair raw[{k}]={} exp={}",
+                gr[k],
+                er[k]
+            );
+            assert!(
+                (go[k] - eo[k]).abs() < 1e-4,
+                "pair ones[{k}]={} exp={}",
+                go[k],
+                eo[k]
+            );
+        }
+
+        // 拆分版（raw_halfk + ones_halfk）必须与合并版逐位一致。
+        let g_raw2 = lora_einsum_raw_halfk(&a_t, &b_t, &scores, &device());
+        let g_ones2 = lora_ones_halfk(&a_t, &b_t, &device());
+        let gr2 = to_vec(g_raw2);
+        let go2 = to_vec(g_ones2);
+        for k in 0..gr2.len() {
+            assert!(
+                (gr2[k] - er[k]).abs() < 1e-4,
+                "raw_halfk[{k}]={} exp={}",
+                gr2[k],
+                er[k]
+            );
+            assert!(
+                (go2[k] - eo[k]).abs() < 1e-4,
+                "ones_halfk[{k}]={} exp={}",
+                go2[k],
+                eo[k]
+            );
+        }
     }
 
     #[test]
@@ -1333,11 +1503,14 @@ mod tests {
             let lo = k * 4;
             let hi = lo + 4;
             let (a_t, b_t) = cache.slice_upload(0, lo, hi, base_sigma, &device());
-            let scores = &raw[lo..hi];
-            grad_acc = grad_acc + lora_einsum_raw(&a_t, &b_t, scores, &device());
-            ones_acc = ones_acc + lora_einsum_ones(&a_t, &b_t, &device());
-            sum_raw += scores.iter().sum::<f32>();
-            sum_raw2 += scores.iter().map(|x| x * x).sum::<f32>();
+            // 缓存为 (n,a,r)/(n,b,r) 布局；内联 einsum 新布局为 (n,r,*)，转视图即可。
+            let a_ra = a_t.swap_dims(1, 2);
+            let b_rb = b_t.swap_dims(1, 2);
+            let scores_t = Tensor::<B, 1>::from_data(&raw[lo..hi], &device());
+            grad_acc = grad_acc + lora_einsum_raw(&a_ra, &b_rb, &scores_t, &device());
+            ones_acc = ones_acc + lora_einsum_ones(&a_ra, &b_rb, &device());
+            sum_raw += raw[lo..hi].iter().sum::<f32>();
+            sum_raw2 += raw[lo..hi].iter().map(|x| x * x).sum::<f32>();
         }
         let mean = sum_raw / 8.0;
         let var = sum_raw2 / 8.0 - mean * mean;

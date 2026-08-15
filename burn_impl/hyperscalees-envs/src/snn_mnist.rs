@@ -136,23 +136,22 @@ pub fn load_mnist_from_dir(
 /// burn manages its own RNG (no JAX key), so the *statistical* property (per-element
 /// firing rate ≈ pixel value) is what holds, not any bitwise equality.
 ///
+/// 实现：一次 `(t, batch, in_dim)` 的 Uniform 随机 + 一次比较（替代逐时间步 t 次随机 +
+/// 拼接），统计语义完全一致（每元素每时间步独立 Bernoulli），GPU 上减少 t-1 次随机
+/// 内核与 1 次 cat。
+///
 /// Returns a `(t, batch, in_dim)` 0/1 `f32` tensor.
 pub fn poisson_encode(images: Tensor<B, 2>, t: usize) -> Tensor<B, 3> {
     let device = images.device();
     let [batch, in_dim] = images.shape().dims();
-
-    let mut spikes: Vec<Tensor<B, 3>> = Vec::with_capacity(t);
-    for _ in 0..t {
-        // Draw u ~ Uniform(0, 1) elementwise, then spike = 1 if u < p else 0.
-        let uniform = Tensor::<B, 2>::random(
-            [batch, in_dim],
-            Distribution::Uniform(0.0, 1.0),
-            &device,
-        );
-        let spike: Tensor<B, 2> = uniform.lower(images.clone()).float();
-        spikes.push(spike.unsqueeze_dim(0));
-    }
-    Tensor::cat(spikes, 0)
+    // Draw u ~ Uniform(0, 1) elementwise over (t, batch, in_dim)，spike = 1 if u < p else 0。
+    let uniform = Tensor::<B, 3>::random(
+        [t, batch, in_dim],
+        Distribution::Uniform(0.0, 1.0),
+        &device,
+    );
+    let probs = images.unsqueeze_dim(0); // (1, batch, in_dim) 广播
+    uniform.lower(probs).float()
 }
 
 /// 奖励类型，对应 Python `fitness_from_logits(logits, labels, reward)` 的 `reward` 参数。

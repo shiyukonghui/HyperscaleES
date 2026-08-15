@@ -458,6 +458,91 @@ impl TrainableVthSnn {
         let gain = self.out_gain.value.clone().unsqueeze::<2>(); // (1, 1)
         logits * gain
     }
+
+    /// 优化版批量前向（LoRA 噪声预生成版）：`(T, n, in)` 尖峰 -> `(n, num_classes)` logits。
+    ///
+    /// 与 [`Self::forward_batched`] 数学语义完全一致（含阈值 softplus、tau_m、LIF 扫描
+    /// 与读出 gain），但针对 GPU 训练热路径重写了内核编排：
+    ///
+    /// - `noise` 为 3 层 `(A', B')`（fc1/fc2/fc3 一一对应），其中 `A'` 形状 `(n, r, a)`
+    ///   且已乘 `sign * base_sigma`，`B'` 形状 `(n, r, b)`，两者均为**连续**张量；
+    /// - 每层用 [`lora_linear_batched`]：base 展平为一次 2D GEMM，噪声注入用两次
+    ///   3D batched matmul（T 并入 batch），**不物化 (n,b,r)/(n,a,r) 中间张量**
+    ///   （旧逐时间步广播路径在 fc1 上单 chunk 约 84ms，合并后约 7ms）；
+    /// - `th1`/`th2` 为调用方按 epoch 提取的 `softplus(v_th_i)` 标量，避免每次前向
+    ///   内部的 `into_scalar` 设备同步。
+    pub fn forward_batched_lora(
+        &self,
+        x: Tensor<B, 3>,                       // (T, n, in)
+        th1: f32,
+        th2: f32,
+        noise: &[(Tensor<B, 3>, Tensor<B, 3>)], // 3 层 (A'(n,r,a), B'(n,r,b))
+    ) -> Tensor<B, 2> {                        // (n, C)
+        let [_, n, _] = x.dims();
+        let device = x.device().clone();
+        let p1 = LifParams { tau_m: self.tau_m, v_th: th1 };
+        let p2 = LifParams { tau_m: self.tau_m, v_th: th2 };
+
+        // 第 1 层：批量 LoRA 线性投影，再 LIF 扫描。
+        let cur1 = lora_linear_batched(x, &self.fc1.weight, &noise[0]); // (T, n, h1)
+        let v0_1 = Tensor::<B, 2>::zeros([n, self.fc1.weight.dims()[0]], &device);
+        let spikes1 = run_lif(p1, cur1, v0_1); // (T, n, h1)
+
+        // 第 2 层。
+        let cur2 = lora_linear_batched(spikes1, &self.fc2.weight, &noise[1]); // (T, n, h2)
+        let v0_2 = Tensor::<B, 2>::zeros([n, self.fc2.weight.dims()[0]], &device);
+        let spikes2 = run_lif(p2, cur2, v0_2); // (T, n, h2)
+
+        // 读出：时间轴上的平均发放率 -> fc3（噪声注入同为 batched matmul，m=1）-> gain。
+        let rate = spikes2.mean_dim(0).squeeze_dim::<2>(0); // (n, h2)
+        let (a3, b3) = &noise[2];
+        let base3 = rate.clone().matmul(self.fc3.weight.clone().transpose()); // (n, C)
+        let y = rate
+            .clone()
+            .unsqueeze_dim::<3>(1)
+            .matmul(b3.clone().swap_dims(1, 2)) // (n,1,h2)@(n,h2,r) -> (n,1,r)
+            .squeeze_dim::<2>(1);
+        let noise3 = y
+            .clone()
+            .unsqueeze_dim::<3>(1)
+            .matmul(a3.clone()) // (n,1,r)@(n,r,C) -> (n,1,C)
+            .squeeze_dim::<2>(1);
+        let logits = base3 + noise3; // (n, C)
+        let gain = self.out_gain.value.clone().unsqueeze::<2>(); // (1, 1)
+        logits * gain
+    }
+}
+
+/// 单层批量 LoRA 线性前向：(T,n,in) -> (T,n,a)，供 [`TrainableVthSnn::forward_batched_lora`] 使用。
+///
+/// 相比逐时间步「广播乘法 + sum」（会物化 (n,b,r)/(n,a,r) 大中间张量，fc1 单层单 chunk
+/// 就约 84ms），这里把 T 并入 batch：
+/// - base：输入展平 (T·n, in) 一次 2D GEMM（`x @ w^T`）；
+/// - 噪声 y：`(n,T,in) @ (n,in,r)` 一次 3D batched matmul（rhs 为 B' 的列主序视图）；
+/// - 噪声 out：`(n,T,r) @ (n,r,a)` 一次 3D batched matmul（rhs 为 A' 连续张量）。
+///
+/// `noise` = `(A' (n,r,a) 已乘 sign*base_sigma, B' (n,r,b))`，A' 与 B' 均为连续张量。
+/// 数学上与逐时间步 `base + x_t @ B @ A^T` 完全一致（仅浮点累加顺序差异）。
+fn lora_linear_batched(
+    x: Tensor<B, 3>,                       // (T, n, in)
+    w: &Tensor<B, 2>,                      // (a, in)
+    noise: &(Tensor<B, 3>, Tensor<B, 3>),  // (A'(n,r,a), B'(n,r,b))
+) -> Tensor<B, 3> {                        // (T, n, a)
+    let [t, n, in_dim] = x.dims();
+    let [a, _in_dim] = w.dims();
+    let (a_ra, b_rb) = noise;
+    // B' (n,r,b) -> (n,b,r) 列主序视图（k 维 stride 1，cubecl matmul 原生支持）。
+    let b_br = b_rb.clone().swap_dims(1, 2);
+    // 输入 (T,n,in) -> (n,T,in) 连续（一次小拷贝，fc1 约 37.6MB）。
+    let xp = x.swap_dims(0, 1).reshape([n, t, in_dim]);
+    let base = xp
+        .clone()
+        .reshape([n * t, in_dim])
+        .matmul(w.clone().transpose())
+        .reshape([n, t, a]); // (n,T,a)
+    let y = xp.matmul(b_br); // (n,T,in)@(n,in,r) -> (n,T,r)
+    let noise_t = y.matmul(a_ra.clone()); // (n,T,r)@(n,r,a) -> (n,T,a)
+    (base + noise_t).swap_dims(0, 1) // (T, n, a) 视图（供 run_lif 逐时间步切片）
 }
 
 /// 提取单元素张量的唯一标量值（用于构造 `LifParams` 的标量 v_th）。
@@ -802,5 +887,80 @@ mod tests {
             c.iter().zip(n.iter()).any(|(a, b)| a != b),
             "perturbation must change the output"
         );
+    }
+
+    // -- forward_batched_lora（优化版批量前向）-------------------------------
+
+    #[test]
+    fn forward_batched_lora_matches_forward_batched() {
+        // 优化版（batched matmul 合并 T + (n,r,*) 噪声布局）必须与旧版 forward_batched
+        // （逐时间步广播乘法）在相同噪声下逐位一致（容差 1e-5，仅累加顺序差异）。
+        let model = TrainableVthSnn::new(784, 16, 16, 10, 0.3, &device());
+        let x = Tensor::<B, 3>::random(
+            [3, 4, 784],
+            burn::tensor::Distribution::Bernoulli(0.5),
+            &device(),
+        );
+        let tids: Vec<i32> = (0..4).collect();
+        let rank = 3usize;
+        let base_sigma = 0.25_f32;
+
+        // 与 accumulate_train 相同的噪声生成语义（反对称配对 + A' 乘 base_sigma），
+        // 布局为 (n,r,a)/(n,r,b) 连续张量。
+        let mut noises_ra: Vec<(Tensor<B, 3>, Tensor<B, 3>)> = Vec::with_capacity(3);
+        let shapes = [
+            model.fc1.weight.dims(),
+            model.fc2.weight.dims(),
+            model.fc3.weight.dims(),
+        ];
+        for [a, b] in shapes {
+            let b_even: Tensor<B, 3> = Tensor::random(
+                [2, rank, b],
+                burn::tensor::Distribution::Normal(0.0, 1.0),
+                &device(),
+            );
+            let b_rb = Tensor::cat(vec![b_even.clone(), b_even.neg()], 0); // (n,r,b)
+            let a_even: Tensor<B, 3> = Tensor::random(
+                [2, rank, a],
+                burn::tensor::Distribution::Normal(0.0, 1.0),
+                &device(),
+            );
+            let a_ra = Tensor::cat(vec![a_even.clone(), a_even.neg()], 0).mul_scalar(base_sigma);
+            noises_ra.push((a_ra, b_rb));
+        }
+
+        let th1 = softplus(model.v_th1.value.clone()).into_scalar();
+        let th2 = softplus(model.v_th2.value.clone()).into_scalar();
+        let out_new = model.forward_batched_lora(x.clone(), th1, th2, &noises_ra);
+
+        // 旧版路径：把 (n,r,*) 噪声转回 (n,a,r)/(n,b,r) 视图，走广播乘法闭包。
+        let noises_ar: Vec<(Tensor<B, 3>, Tensor<B, 3>)> = noises_ra
+            .iter()
+            .map(|(a_ra, b_rb)| (a_ra.clone().swap_dims(1, 2), b_rb.clone().swap_dims(1, 2)))
+            .collect();
+        let noise_helper =
+            move |xt: Tensor<B, 2>, w: Tensor<B, 2>, _tids: &[i32], _ep: i32| -> Tensor<B, 2> {
+                let dims = w.dims();
+                let pos = shapes.iter().position(|d| *d == dims).unwrap();
+                let (a_t, b_t) = &noises_ar[pos];
+                let base = xt.clone().matmul(w.clone().transpose());
+                let y = xt.clone().unsqueeze_dim::<3>(2) * b_t.clone();
+                let y = y.sum_dim(1).squeeze_dim::<2>(1);
+                let noise = y.unsqueeze_dim::<3>(1) * a_t.clone();
+                let noise = noise.sum_dim(2).squeeze_dim::<2>(2);
+                base + noise
+            };
+        let out_old = model.forward_batched(x, &tids, 0, Some(&noise_helper));
+
+        assert_eq!(out_new.dims(), out_old.dims());
+        let a = to_vec(out_new);
+        let b = to_vec(out_old);
+        assert_eq!(a.len(), b.len());
+        for (i, (u, v)) in a.iter().zip(b.iter()).enumerate() {
+            assert!(
+                (u - v).abs() <= 1e-5,
+                "优化版与旧版前向在第 {i} 个元素不一致：{u} vs {v}"
+            );
+        }
     }
 }

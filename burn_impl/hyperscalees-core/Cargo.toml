@@ -14,7 +14,10 @@ default = ["flex"]
 flex = ["burn/flex"]
 # GPU：burn-cuda（CubeCL CUDA 后端，运行时经 nvrtc JIT 编译内核）。
 # 需要本机已安装 NVIDIA CUDA Toolkit（构建期链接 nvrtc/driver，运行期加载驱动）。
-# 必须同时开启 burn/fusion（把连续逐元素/归约链条融合为单内核，GPU 热路径关键加速）
-# 与 burn/autotune（matmul 自动调优选最优内核）；否则裸 CubeBackend 每个 op 单独
-# 启核 + 同步，60k batch 下每 epoch 会有上千次内核启动，性能退化成 CPU 级。
-gpu = ["burn/cuda", "burn/fusion", "burn/autotune"]
+# 注意：刻意不开启 burn/fusion——实测（RTX 4090，accumulate_train 60k batch）fusion
+# 追踪器每 op 的 CPU 入队开销是裸 CubeBackend 的 8~30 倍（matmul 22ms/op vs 0.75ms/op，
+# 元素级 86µs vs 11µs），使训练变成 CPU 入队瓶颈（GPU 利用率在 3%~100% 间震荡，
+# 0.74s/epoch）；去掉 fusion 后 0.39s/epoch。元素级链条（LIF 等）拆成小内核的 GPU
+# 代价远小于 fusion 的 CPU 开销。
+# burn/autotune（matmul 自动调优选最优内核）保持开启。
+gpu = ["burn/cuda", "burn/autotune"]

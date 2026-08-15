@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use burn::tensor::{Distribution, Tensor};
+use burn::tensor::{Device, Distribution, Tensor};
 use hyperscalees_core::B;
 
 fn parse_args() -> (usize, usize, usize, usize, usize, usize) {
@@ -40,18 +40,27 @@ fn parse_args() -> (usize, usize, usize, usize, usize, usize) {
     (n, b, a, r, t, iters)
 }
 
-fn time_ms<F: FnMut() -> Tensor<B, 2>>(warmup: bool, iters: usize, mut f: F) -> f64 {
+fn time_ms<F: FnMut() -> Tensor<B, 1>>(warmup: bool, iters: usize, mut f: F) -> f64 {
     if warmup {
         let _ = f().into_scalar(); // 触发 JIT 编译 + autotune
     }
-    let mut times = Vec::with_capacity(iters);
+    let mut times: Vec<f64> = Vec::with_capacity(iters);
     for _ in 0..iters {
         let t0 = Instant::now();
         let out = f();
         out.into_scalar(); // 强制同步，计入完整执行时间
         times.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
-    times.iter().sum::<f64>() / times.len() as f64
+    let n = times.len() as f64;
+    if n == 0.0 {
+        return f64::NAN;
+    }
+    let sum: f64 = times.iter().sum();
+    if sum.is_nan() {
+        eprintln!("  [dbg] raw times = {times:?}");
+        return f64::NAN;
+    }
+    sum / n
 }
 
 fn main() {
@@ -67,7 +76,7 @@ fn main() {
     let b_t: Tensor<B, 3> = Tensor::random([n, b, r], Distribution::Normal(0.0, 1.0), &device);
     let a_t: Tensor<B, 3> = Tensor::random([n, a, r], Distribution::Normal(0.0, 1.0), &device);
     let cur = time_ms(true, iters, || {
-        let mut parts: Vec<Tensor<B, 2>> = Vec::with_capacity(t);
+        let mut parts: Vec<Tensor<B, 3>> = Vec::with_capacity(t);
         for i in 0..t {
             let x_t = x
                 .clone()
@@ -78,16 +87,16 @@ fn main() {
             let y = y.sum_dim(1).squeeze_dim::<2>(1);
             let noise = y.unsqueeze_dim::<3>(1) * a_t.clone();
             let noise = noise.sum_dim(2).squeeze_dim::<2>(2);
-            parts.push(base + noise);
+            parts.push((base + noise).unsqueeze_dim::<3>(0));
         }
-        Tensor::cat(parts, 0).mean_dim(0).squeeze_dim::<2>(0)
+        Tensor::cat(parts, 0).mean_dim(0).squeeze_dim::<2>(0).mean()
     });
     println!("[1] broadcast_mul_sum        : {cur:8.2} ms/chunk (当前实现)");
 
     // ---- 2. 3D batched matmul, m=1（逐时间步）----
     let a_tt: Tensor<B, 3> = a_t.clone().swap_dims(1, 2); // (n, r, a)
     let cur = time_ms(true, iters, || {
-        let mut parts: Vec<Tensor<B, 2>> = Vec::with_capacity(t);
+        let mut parts: Vec<Tensor<B, 3>> = Vec::with_capacity(t);
         for i in 0..t {
             let x_t = x
                 .clone()
@@ -104,14 +113,14 @@ fn main() {
                 .unsqueeze_dim::<3>(1)
                 .matmul(a_tt.clone())
                 .squeeze_dim::<2>(1); // (n,1,r)@(n,r,a) -> (n,a)
-            parts.push(base + noise);
+            parts.push((base + noise).unsqueeze_dim::<3>(0));
         }
-        Tensor::cat(parts, 0).mean_dim(0).squeeze_dim::<2>(0)
+        Tensor::cat(parts, 0).mean_dim(0).squeeze_dim::<2>(0).mean()
     });
     println!("[2] batched_m1_per_t         : {cur:8.2} ms/chunk");
 
     // ---- 3. 3D batched matmul, m=T 合并（每层一次）----
-    let xp = x.clone().swap_dims(0, 1); // (n, T, b)
+    let xp = x.clone().swap_dims(0, 1).reshape([n, t, b]); // (n, T, b) 连续
     let cur = time_ms(true, iters, || {
         let base = xp
             .clone()
@@ -120,7 +129,7 @@ fn main() {
             .reshape([n, t, a]); // (n,T,a)
         let y = xp.clone().matmul(b_t.clone()); // (n,T,b)@(n,b,r) -> (n,T,r)
         let noise = y.matmul(a_tt.clone()); // (n,T,r)@(n,r,a) -> (n,T,a)
-        (base + noise).mean_dim(1).squeeze_dim::<2>(1)
+        (base + noise).mean_dim(1).squeeze_dim::<2>(1).mean()
     });
     println!("[3] batched_mT_merged        : {cur:8.2} ms/chunk");
 
@@ -131,18 +140,121 @@ fn main() {
         let a_w = a_t.clone() * scores_t.clone().reshape([n, 1, 1]);
         let a_flat = a_w.swap_dims(1, 2).reshape([n * r, a]);
         let b_flat = b_t.clone().swap_dims(1, 2).reshape([n * r, b]);
-        a_flat.transpose().matmul(b_flat)
+        a_flat.transpose().matmul(b_flat).mean()
     });
     println!("[4] einsum_gemm_2d           : {cur:8.2} ms/chunk");
 
-    // ---- 4b. einsum 变体：不 transpose 的 GEMM (n*r,a)@(n*r,b)^T ----
+    // ---- 4b. einsum 变体：A 已按 (n,r,a) 布局（无 swap/reshape 拷贝）----
+    let a_ra: Tensor<B, 3> = a_t.clone().swap_dims(1, 2).reshape([n, r, a]); // 连续 (n,r,a)
     let cur = time_ms(true, iters, || {
-        let a_w = a_t.clone() * scores_t.clone().reshape([n, 1, 1]);
-        let a_flat = a_w.swap_dims(1, 2).reshape([n * r, a]);
+        let a_w = a_ra.clone() * scores_t.clone().reshape([n, 1, 1]);
+        let a_flat = a_w.reshape([n * r, a]); // 连续，无拷贝
         let b_flat = b_t.clone().swap_dims(1, 2).reshape([n * r, b]);
-        a_flat.matmul(b_flat.transpose()).transpose()
+        a_flat.transpose().matmul(b_flat).mean()
     });
-    println!("[4b] einsum_gemm_2d_alt      : {cur:8.2} ms/chunk");
+    println!("[4b] einsum_gemm_A_ra        : {cur:8.2} ms/chunk");
+
+    // ---- 4c. einsum 变体：A 与 B 都按 (n,r,*) 布局（无任何拷贝）----
+    let b_rb: Tensor<B, 3> = b_t.clone().swap_dims(1, 2).reshape([n, r, b]); // 连续 (n,r,b)
+    let cur = time_ms(true, iters, || {
+        let a_w = a_ra.clone() * scores_t.clone().reshape([n, 1, 1]);
+        let a_flat = a_w.reshape([n * r, a]); // 连续，无拷贝
+        let b_flat = b_rb.clone().reshape([n * r, b]); // 连续，无拷贝
+        a_flat.transpose().matmul(b_flat).mean()
+    });
+    println!("[4c] einsum_gemm_no_copy     : {cur:8.2} ms/chunk");
+
+    // ---- 4d. 反对称配对合并 einsum（训练热路径：raw+ones 一次半 K GEMM）----
+    let b_rab: Tensor<B, 3> = b_t.clone().swap_dims(1, 2).reshape([n, r, b]); // (n,r,b)
+    let a_ra: Tensor<B, 3> = a_t.clone().swap_dims(1, 2).reshape([n, r, a]); // (n,r,a)
+    let cur = time_ms(true, iters, || {
+        let half = n / 2;
+        let a_half = a_ra.clone().slice([0..half, 0..r, 0..a]);
+        let b_half = b_rab.clone().slice([0..half, 0..r, 0..b]);
+        let f_pair = scores_t
+            .clone()
+            .slice([0..half])
+            .add(scores_t.clone().slice([half..n]));
+        let b_w = b_half.clone() * f_pair.reshape([half, 1, 1]);
+        let b2 = b_half.mul_scalar(2.0);
+        let a_stack = Tensor::cat(vec![a_half.clone(), a_half], 2); // (half, r, 2a)
+        let b_stack = Tensor::cat(vec![b_w, b2], 2); // (half, r, 2b)
+        let a_flat = a_stack.reshape([half * r, 2 * a]);
+        let b_flat = b_stack.reshape([half * r, 2 * b]);
+        a_flat.transpose().matmul(b_flat).mean()
+    });
+    println!("[4d] einsum_pair_halfk       : {cur:8.2} ms/chunk");
+
+    // ---- 4e. einsum 变体：lhs 显式 contiguify（避免转置视图的非合并读）----
+    let cur = time_ms(true, iters, || {
+        let a_w = a_ra.clone() * scores_t.clone().reshape([n, 1, 1]);
+        let a_flat = a_w.reshape([n * r, a]); // 连续
+        let a_lhs = a_flat.transpose().reshape([a, n * r]); // 拷贝 -> 连续 (a, n*r)
+        let b_flat = b_rab.clone().reshape([n * r, b]); // 连续
+        a_lhs.matmul(b_flat).mean()
+    });
+    println!("[4e] einsum_contig_lhs       : {cur:8.2} ms/chunk");
+
+    // ---- 4f. 配对合并（M 堆叠：raw/ones 共享 B_half，半 K 一次 GEMM）----
+    let cur = time_ms(true, iters, || {
+        let half = n / 2;
+        let a_half = a_ra.clone().slice([0..half, 0..r, 0..a]);
+        let b_half = b_rab.clone().slice([0..half, 0..r, 0..b]);
+        let f_pair = scores_t
+            .clone()
+            .slice([0..half])
+            .add(scores_t.clone().slice([half..n]));
+        let a_w = a_half.clone() * f_pair.reshape([half, 1, 1]);
+        let a_stack = Tensor::cat(vec![a_w, a_half], 2); // (half, r, 2a)
+        let a_flat = a_stack.reshape([half * r, 2 * a]);
+        let b_flat = b_half.reshape([half * r, b]);
+        a_flat.transpose().matmul(b_flat).mean()
+    });
+    println!("[4f] einsum_pair_contig      : {cur:8.2} ms/chunk");
+
+    // ---- 4h. raw_halfk 形状：(128, 384000)@(384000, 784)，转置 lhs 视图 ----
+    let cur = time_ms(true, iters, || {
+        let half = n / 2;
+        let a_half = a_ra.clone().slice([0..half, 0..r, 0..a]);
+        let b_half = b_rab.clone().slice([0..half, 0..r, 0..b]);
+        let f_pair = scores_t
+            .clone()
+            .slice([0..half])
+            .add(scores_t.clone().slice([half..n]));
+        let a_w = a_half * f_pair.reshape([half, 1, 1]);
+        let a_flat = a_w.reshape([half * r, a]);
+        let b_flat = b_half.reshape([half * r, b]);
+        a_flat.transpose().matmul(b_flat).mean()
+    });
+    println!("[4h] raw_halfk_strided_lhs   : {cur:8.2} ms/chunk");
+
+    // ---- 4i. 同形状但 lhs 显式拷贝为连续 ----
+    let cur = time_ms(true, iters, || {
+        let half = n / 2;
+        let a_half = a_ra.clone().slice([0..half, 0..r, 0..a]);
+        let b_half = b_rab.clone().slice([0..half, 0..r, 0..b]);
+        let f_pair = scores_t
+            .clone()
+            .slice([0..half])
+            .add(scores_t.clone().slice([half..n]));
+        let a_w = a_half * f_pair.reshape([half, 1, 1]);
+        let a_flat = a_w.reshape([half * r, a]);
+        let a_lhs = a_flat.transpose().reshape([a, half * r]); // 连续
+        let b_flat = b_half.reshape([half * r, b]);
+        a_lhs.matmul(b_flat).mean()
+    });
+    println!("[4i] raw_halfk_contig_lhs    : {cur:8.2} ms/chunk");
+
+    // ---- 4j. ones_halfk 形状：(128, 384000)@(384000, 784) ----
+    let cur = time_ms(true, iters, || {
+        let half = n / 2;
+        let a_half = a_ra.clone().slice([0..half, 0..r, 0..a]);
+        let b_half = b_rab.clone().slice([0..half, 0..r, 0..b]);
+        let a_flat = a_half.reshape([half * r, a]);
+        let b_flat = b_half.reshape([half * r, b]);
+        a_flat.transpose().matmul(b_flat).mul_scalar(2.0).mean()
+    });
+    println!("[4j] ones_halfk               : {cur:8.2} ms/chunk");
 
     // ---- 5. poisson：循环 8 次 vs 单次 (T,n,b) ----
     let cur = time_ms(true, iters, || {
@@ -168,20 +280,44 @@ fn main() {
             .squeeze_dim::<2>(2)
             .mean()
     });
-    println!("[6] rand_normal(n,b,r)       : {cur:8.2} ms/chunk ({(n * b * r) as f64 * 4.0 / cur / 1e6} GB/s)");
+    let gbps = (n * b * r) as f64 * 4.0 / cur / 1e6;
+    println!("[6] rand_normal(n,b,r)       : {cur:8.2} ms/chunk ({gbps:.0} GB/s)");
 
-    // ---- 7. matmul 基础吞吐 (n,b)@(b,a) ----
+    // ---- 6b. 反对称生成（当前 gen_gpu_lora_noise 结构）----
     let cur = time_ms(true, iters, || {
-        let x2 = x2.clone();
-        x2.matmul(w.clone().transpose()).mean_dim(1).squeeze_dim::<1>(1).mean()
+        let half = n / 2;
+        let b_even: Tensor<B, 3> =
+            Tensor::random([half, b, r], Distribution::Normal(0.0, 1.0), &device);
+        let b_full = Tensor::cat(vec![b_even.clone(), b_even.neg()], 0); // (n, b, r)
+        let a_even: Tensor<B, 3> =
+            Tensor::random([half, r, a], Distribution::Normal(0.0, 1.0), &device);
+        let a_full =
+            Tensor::cat(vec![a_even.clone(), a_even.neg()], 0).mul_scalar(0.025); // (n,r,a)
+        b_full.sum_dim(1).squeeze_dim::<2>(1).sum() + a_full.sum_dim(1).squeeze_dim::<2>(1).sum()
+    });
+    println!("[6b] antipodal_gen           : {cur:8.2} ms/chunk");
+
+    // ---- 7. matmul 基础吞吐 (n,b)@(b,a) 与 (T*n,b)@(b,a) ----
+    let cur = time_ms(true, iters, || {
+        x2.clone().matmul(w.clone().transpose()).mean_dim(1).squeeze_dim::<1>(1).mean()
     });
     println!("[7] matmul(n,b)x(b,a)        : {cur:8.2} ms/chunk");
+    let cur = time_ms(true, iters, || {
+        x.clone()
+            .reshape([n * t, b])
+            .matmul(w.clone().transpose())
+            .mean_dim(1)
+            .squeeze_dim::<1>(1)
+            .mean()
+    });
+    println!("[7b] matmul(Tn,b)x(b,a)      : {cur:8.2} ms/chunk");
 
     // ---- 8. LIF 步进（逐时间步, 2 层）----
     let cur = time_ms(true, iters, || {
         let mut v: Tensor<B, 2> = Tensor::zeros([n, 128], &device);
         for _ in 0..t {
-            let cur_t = Tensor::<B, 2>::random([n, 128], Distribution::Normal(0.0, 1.0), &device);
+            let cur_t: Tensor<B, 2> =
+                Tensor::random([n, 128], Distribution::Normal(0.0, 1.0), &device);
             let charged = v.clone() + (v.neg() + cur_t).mul_scalar(1.0 / 20.0);
             let spike = charged.clone().greater_equal_elem(0.3).float();
             v = charged.clone() * spike.clone().neg().add_scalar(1.0);
@@ -189,4 +325,71 @@ fn main() {
         v.mean()
     });
     println!("[8] lif_loop                 : {cur:8.2} ms/chunk");
+
+    // ---- 9. sum_dim 归约：广播中间量的总和（当前噪声路径的归约成本）----
+    let cur = time_ms(true, iters, || {
+        let y = x2.clone().unsqueeze_dim::<3>(2) * b_t.clone(); // (n,b,1)*(n,b,r)
+        y.sum_dim(1).squeeze_dim::<2>(1).mean()
+    });
+    println!("[9] mul_then_sumdim         : {cur:8.2} ms/chunk");
+
+    // ---- 10. 3D batched matmul 单独（无 base matmul 干扰）----
+    let cur = time_ms(true, iters, || {
+        xp.clone().matmul(b_t.clone()).mean_dim(1).squeeze_dim::<2>(1).mean()
+    });
+    println!("[10] batched_matmul_only     : {cur:8.2} ms/chunk");
+
+    // ---- 10b. 同上，但 rhs 为列主序视图（B' 存 (n,r,b) 后 swap）----
+    let b_rab: Tensor<B, 3> = b_t.clone().swap_dims(1, 2).reshape([n, r, b]); // 连续 (n,r,b)
+    let b_br_view: Tensor<B, 3> = b_rab.clone().swap_dims(1, 2); // (n,b,r) 列主序视图
+    let cur = time_ms(true, iters, || {
+        xp.clone().matmul(b_br_view.clone()).mean_dim(1).squeeze_dim::<2>(1).mean()
+    });
+    println!("[10b] batched_matmul_colmajor_rhs: {cur:8.2} ms/chunk");
+
+    // ---- 10c. 完整噪声路径（合并 T，rhs 列主序，A' 连续 (n,r,a)）----
+    let cur = time_ms(true, iters, || {
+        let base = xp
+            .clone()
+            .reshape([n * t, b])
+            .matmul(w.clone().transpose())
+            .reshape([n, t, a]);
+        let y = xp.clone().matmul(b_br_view.clone()); // rhs 列主序
+        let noise = y.matmul(a_ra.clone()); // rhs 连续 (n,r,a)
+        (base + noise).mean_dim(1).squeeze_dim::<2>(1).mean()
+    });
+    println!("[10c] merged_full_colmajor   : {cur:8.2} ms/chunk");
+
+    // ---- 11. CPU 入队吞吐（无同步）：小张量逐 op 的 CPU 开销 ----
+    let small: Tensor<B, 2> = Tensor::random([n, 64], Distribution::Normal(0.0, 1.0), &device);
+    let t0 = Instant::now();
+    let mut acc = small.clone();
+    for _ in 0..2000 {
+        acc = acc.clone().mul_scalar(1.0000001);
+    }
+    acc.mean().into_scalar(); // 末尾一次同步
+    let per_op_ms = t0.elapsed().as_secs_f64() * 1000.0 / 2000.0;
+    println!("[11] enqueue_elemwise        : {per_op_ms:8.4} ms/op (CPU 入队)");
+
+    // ---- 12. matmul 入队吞吐 ----
+    let w64: Tensor<B, 2> = Tensor::random([64, 64], Distribution::Normal(0.0, 1.0), &device);
+    let t0 = Instant::now();
+    let mut acc2 = small.clone();
+    for _ in 0..500 {
+        acc2 = acc2.clone().matmul(w64.clone());
+    }
+    acc2.mean().into_scalar();
+    let per_op_ms = t0.elapsed().as_secs_f64() * 1000.0 / 500.0;
+    println!("[12] enqueue_matmul          : {per_op_ms:8.4} ms/op (CPU 入队)");
+
+    // ---- 13. random 入队吞吐 ----
+    let t0 = Instant::now();
+    let mut acc3 = small.clone();
+    for _ in 0..500 {
+        acc3 = acc3.clone()
+            + Tensor::<B, 2>::random([n, 64], Distribution::Normal(0.0, 1.0), &device);
+    }
+    acc3.mean().into_scalar();
+    let per_op_ms = t0.elapsed().as_secs_f64() * 1000.0 / 500.0;
+    println!("[13] enqueue_random          : {per_op_ms:8.4} ms/op (CPU 入队)");
 }
