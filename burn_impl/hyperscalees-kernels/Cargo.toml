@@ -1,0 +1,28 @@
+[package]
+name = "hyperscalees-kernels"
+version = "0.1.0"
+edition = "2021"
+description = "cuda-oxide 候选 GPU 内核（标准 Rust，待 cuda-oxide toolchain 编译为 PTX）"
+license = "MIT OR Apache-2.0"
+
+# 说明：
+# 本 crate 的内核源码用标准 Rust 编写（当前用普通 rustc 即可编译通过，
+# 内核函数为纯函数/CPU 可运行版本，供单测对照）。
+# 待 cuda-oxide 工具链就绪后（见 docs/cuda_oxide_integration_plan.md 阶段 A），
+# 用 cuda-oxide rustc fork 编译同一源码产出 PTX，宿主侧经 cudarc
+# （CudaContext::load_module）加载并 launch。
+#
+# 内核候选优先级（对应训练热路径，成本见优化文档）：
+#   1. 噪声生成（taus+lcg+Box-Muller 半量填充）  ~19ms/epoch
+#   2. einsum 合并 GEMM（瘦 M 长 K，K=384000）   ~50ms/epoch（cuBLAS TF32）
+#   3. LIF 融合（8 步 × ~7 元素级算子）          ~8ms/epoch
+#   4. 泊松编码融合（Uniform+比较）              ~9ms/epoch
+#
+# 数据契约：内核只接收裸设备指针 + 显式形状/strides（burn 张量为 pitched，
+# 与 cublas.rs 的 raw_ptr / cube.meta.strides() 机制一致），不依赖 burn 内部布局。
+
+[lib]
+# 不自动生成测试目标；单测在 src 内联。
+test = true
+
+[dependencies]

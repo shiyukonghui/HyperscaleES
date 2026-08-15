@@ -29,16 +29,17 @@ use hyperscalees_models::snn::TrainableVthSnn;
 type Server = <CudaRuntime as Runtime>::Server;
 
 /// 全局 cuBLAS handle（绑定到主线程流的原始 CUDA stream）。
-struct CublasState {
-    handle: cudarc::cublas::sys::cublasHandle_t,
-    ctx: *mut cudarc::driver::sys::CUctx_st,
+/// 字段对 crate 内可见（oxide.rs 复用同一 context/stream 机制）。
+pub(crate) struct CublasState {
+    pub(crate) handle: cudarc::cublas::sys::cublasHandle_t,
+    pub(crate) ctx: *mut cudarc::driver::sys::CUctx_st,
 }
 
 // 原始句柄只在本模块内按序使用，不跨线程共享可变访问。
 unsafe impl Send for CublasState {}
 unsafe impl Sync for CublasState {}
 
-fn state(device: &CudaDevice) -> &'static CublasState {
+pub(crate) fn state(device: &CudaDevice) -> &'static CublasState {
     static STATE: OnceLock<CublasState> = OnceLock::new();
     STATE.get_or_init(|| {
         let dh = DeviceHandle::<Server>::new(device.to_id());
@@ -80,7 +81,7 @@ fn state(device: &CudaDevice) -> &'static CublasState {
 }
 
 /// 把 cubecl 张量解析为原始设备指针（走 resolve 机制，跨流依赖自动等待）。
-fn raw_ptr(cube: &CubeTensor<CudaRuntime>, device: &CudaDevice) -> *mut std::ffi::c_void {
+pub(crate) fn raw_ptr(cube: &CubeTensor<CudaRuntime>, device: &CudaDevice) -> *mut std::ffi::c_void {
     let dh = DeviceHandle::<Server>::new(device.to_id());
     let binding: Binding = cube.handle.clone().binding();
     dh.submit_blocking(|s| s.raw_device_ptr(binding, StreamId::current()) as usize)

@@ -6,6 +6,7 @@ members = [
     "hyperscalees-models",
     "hyperscalees-envs",
     "hyperscalees",
+    "hyperscalees-kernels",
 ]
 
 # 把 cubecl-cuda 换成 vendored 副本：仅增加 3 个公开访问器
