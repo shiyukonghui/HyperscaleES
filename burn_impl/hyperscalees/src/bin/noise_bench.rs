@@ -164,6 +164,22 @@ fn main() {
             "A' 半噪声分布异常"
         );
 
+        // [0c4] cuda-oxide PRNG 内核校验：半量正态填充（PTX 经 cudarc 加载），
+        // 分布与 cubek-random 一致（不逐位——种子不同；统计同分布即可）。
+        let b_ox: Tensor<B, 3> = Tensor::empty([n_s / 2, r_s, b_s], &device);
+        hyperscalees::oxide::prng_normal_half(&b_ox, 0.0, 1.0, &device).unwrap();
+        let oxv = b_ox.into_data().into_vec::<f32>().unwrap();
+        let n_ox = oxv.len() as f32;
+        let mean_ox = oxv.iter().sum::<f32>() / n_ox;
+        let var_ox = oxv.iter().map(|x| x * x).sum::<f32>() / n_ox - mean_ox * mean_ox;
+        println!(
+            "[0c4] oxide_prng_check        : mean={mean_ox:.3} var={var_ox:.3} (应≈0, ≈1)"
+        );
+        assert!(
+            mean_ox.abs() < 0.1 && (var_ox - 1.0).abs() < 0.2,
+            "cuda-oxide PRNG 分布异常"
+        );
+
         // [0e] 通用 gemm 帮助函数校验（容差 1e-1：burn 侧该形状启用 TF32，cuBLAS 为
         // 纯 fp32，差异 ~2.5e-4 相对值；转置/布局错误会给出 O(1) 误差仍能抓住）。
         let m0 = 12usize;
@@ -429,17 +445,6 @@ fn main() {
     #[cfg(feature = "gpu")]
     {
         let cur = time_ms(true, iters, || {
-            let half = n / 2;
-            let a_half = a_ra.clone().slice([0..half, 0..r, 0..a]);
-            let b_half = b_rab.clone().slice([0..half, 0..r, 0..b]);
-            let f_pair = scores_t
-                .clone()
-                .slice([0..half])
-                .add(scores_t.clone().slice([half..n]));
-            let a_w = a_half.clone() * f_pair.reshape([half, 1, 1]);
-            let a_stack = Tensor::cat(vec![a_w, a_half], 2);
-            let a_flat = a_stack.reshape([half * r, 2 * a]);
-            let b_flat = b_half.reshape([half * r, b]);
             let (g1, g2) =
                 hyperscalees::cublas::lora_einsum_pair_cublas(&a_ra, &b_rab, &scores_t, &device);
             (g1 + g2).mean()
@@ -677,7 +682,7 @@ fn main() {
     for _ in 0..50 {
         a0 = a0.clone().matmul(w64.clone());
     }
-    let r14 = (a0 + f).mean().into_scalar();
+    let _ = (a0 + f).mean().into_scalar(); // sink：确保 dual 计时包含计算
     let dual = t0.elapsed().as_secs_f64();
     println!(
         "[14] stream_overlap          : single={single:.3}s dual={dual:.3}s (dual≈single 无重叠；≈single/2 有重叠)"
@@ -738,7 +743,6 @@ fn main() {
     println!("[16] gemm_abt_base_fc1        : cu={cu:7.2} burn={bu:7.2} ms/chunk");
     // [17] 噪声第一步：x (T,n,in)@B'^T —— cuBLAS 批在中间（不拷贝）vs burn（先拷贝）。
     let cu = time_ms3(true, 3, || hyperscalees::cublas::batched_gemm_bt(&xr, &br, &device));
-    let t0 = Instant::now();
     let _ = xp.clone().matmul(br2.clone()); // 预热
     let t0 = Instant::now();
     for _ in 0..3 {

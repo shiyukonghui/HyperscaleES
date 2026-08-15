@@ -275,6 +275,9 @@ impl PerfTimers {
 /// `thread_id % 2` 正负配对（thread 2i 与 2i+1 共享 |噪声| 相反号）；分布上仍为
 /// `N(0,1)`，故 ES 估计无偏。**完全免除 CPU 随机数与 CPU→GPU 上传**（原缓存切片
 /// 上传是每 epoch 数十 GB 的主瓶颈）。
+///
+/// （热路径已改用 cuda-oxide 内核 `oxide::prng_normal_half` 批量生成，此函数仅保留作参考。）
+#[allow(dead_code)]
 fn gen_gpu_lora_noise(
     base_sigma: f32,
     rank: usize,

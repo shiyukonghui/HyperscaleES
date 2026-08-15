@@ -30,9 +30,9 @@ type Server = <CudaRuntime as Runtime>::Server;
 
 /// 全局 cuBLAS handle（绑定到主线程流的原始 CUDA stream）。
 /// 字段对 crate 内可见（oxide.rs 复用同一 context/stream 机制）。
-pub(crate) struct CublasState {
-    pub(crate) handle: cudarc::cublas::sys::cublasHandle_t,
-    pub(crate) ctx: *mut cudarc::driver::sys::CUctx_st,
+pub struct CublasState {
+    pub handle: cudarc::cublas::sys::cublasHandle_t,
+    pub ctx: *mut cudarc::driver::sys::CUctx_st,
 }
 
 // 原始句柄只在本模块内按序使用，不跨线程共享可变访问。
@@ -43,7 +43,6 @@ pub(crate) fn state(device: &CudaDevice) -> &'static CublasState {
     static STATE: OnceLock<CublasState> = OnceLock::new();
     STATE.get_or_init(|| {
         let dh = DeviceHandle::<Server>::new(device.to_id());
-        // 闭包结果需 Send：原始指针先转 usize 再还原。
         let ctx = dh
             .submit_blocking(|s| s.raw_context() as usize)
             .expect("取 CUDA 上下文失败") as *mut cudarc::driver::sys::CUctx_st;
@@ -80,8 +79,13 @@ pub(crate) fn state(device: &CudaDevice) -> &'static CublasState {
     })
 }
 
+/// 供探针/集成代码访问全局状态（ctx/stream 机制）。
+pub fn state_pub(device: &CudaDevice) -> &'static CublasState {
+    state(device)
+}
+
 /// 把 cubecl 张量解析为原始设备指针（走 resolve 机制，跨流依赖自动等待）。
-pub(crate) fn raw_ptr(cube: &CubeTensor<CudaRuntime>, device: &CudaDevice) -> *mut std::ffi::c_void {
+pub fn raw_ptr(cube: &CubeTensor<CudaRuntime>, device: &CudaDevice) -> *mut std::ffi::c_void {
     let dh = DeviceHandle::<Server>::new(device.to_id());
     let binding: Binding = cube.handle.clone().binding();
     dh.submit_blocking(|s| s.raw_device_ptr(binding, StreamId::current()) as usize)
@@ -89,7 +93,7 @@ pub(crate) fn raw_ptr(cube: &CubeTensor<CudaRuntime>, device: &CudaDevice) -> *m
 }
 
 /// 把 burn 张量解包为后端原始张量（`TensorPrimitive` enum 的 `Float` 变体）。
-fn as_cube<const D: usize>(t: &Tensor<Cuda, D>) -> CubeTensor<CudaRuntime> {
+pub fn as_cube<const D: usize>(t: &Tensor<Cuda, D>) -> CubeTensor<CudaRuntime> {
     t.clone().into_primitive().tensor()
 }
 
@@ -461,7 +465,7 @@ pub fn forward_batched_lora_cublas(
     device: &CudaDevice,
 ) -> Tensor<Cuda, 2> {
     use hyperscalees_models::snn::{LifParams, run_lif};
-    let [t, n, _in] = x.dims();
+    let [_, n, _in] = x.dims();
     let p1 = LifParams { tau_m: model.tau_m, v_th: th1 };
     let p2 = LifParams { tau_m: model.tau_m, v_th: th2 };
     // 第 1 层：x (T, n, in) 直接使用（批在中间维，无需 permute）。
@@ -536,15 +540,22 @@ pub fn gen_lora_noise_antipodal(
     assert!(n % 2 == 0, "半量噪声生成要求 n 为偶数，实际 {n}");
 
     let b_h: Tensor<Cuda, 3> = Tensor::empty([n / 2, r, b], device);
-    let cbh = as_cube(&b_h);
-    let client_h = cbh.client.clone();
-    cubek_random::random_normal(&client_h, 0.0, 1.0, cbh.binding(), dtype)
-        .expect("B' 前半噪声生成失败");
     let a_h: Tensor<Cuda, 3> = Tensor::empty([n / 2, r, a], device);
-    let cah = as_cube(&a_h);
-    let client_ah = cah.client.clone();
-    cubek_random::random_normal(&client_ah, 0.0, base_sigma, cah.binding(), dtype)
-        .expect("A' 前半噪声生成失败");
+    // 默认走 cuda-oxide 编译的 PRNG 内核（PTX 经 cudarc 加载，同流零同步）；
+    // GEN_CUBEK=1 可切回 cubek-random 内核（对照用）。
+    if std::env::var("GEN_CUBEK").map(|v| v == "1").unwrap_or(false) {
+        let cbh = as_cube(&b_h);
+        let client_h = cbh.client.clone();
+        cubek_random::random_normal(&client_h, 0.0, 1.0, cbh.binding(), dtype)
+            .expect("B' 前半噪声生成失败");
+        let cah = as_cube(&a_h);
+        let client_ah = cah.client.clone();
+        cubek_random::random_normal(&client_ah, 0.0, base_sigma, cah.binding(), dtype)
+            .expect("A' 前半噪声生成失败");
+    } else {
+        crate::oxide::prng_normal_half(&b_h, 0.0, 1.0, device).expect("B' 前半噪声生成失败");
+        crate::oxide::prng_normal_half(&a_h, 0.0, base_sigma, device).expect("A' 前半噪声生成失败");
+    }
 
     (a_h, b_h)
 }

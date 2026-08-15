@@ -1,7 +1,9 @@
 # CUDA-Oxide 集成计划：用 NVIDIA 官方 Rust→CUDA 编译器替换/补充内核层
 
 > 分支：`perf/cuda-oxide`（基于 main，main 已含全部加速：0.15s/epoch 混合后端方案）
-> 状态：**调研完成，等待工具链就绪**（本机网络受限，见 §6）
+> 状态：**阶段 A（工具链）+ 阶段 B（最小闭环 PoC）已完成**——PRNG 噪声内核
+> 已用 cuda-oxide 编写、编译出 PTX 并集成进训练热路径（默认启用，`GEN_CUBEK=1`
+> 可切回 cubek-random 对照）
 > 相关文档：`docs/snn_es_burn_gpu_optimization.md`（现有混合后端方案）
 
 ---
@@ -42,113 +44,203 @@ v0.1.0 / v0.2.0 社区版已发布）是一个 **Rust-to-CUDA 编译器**：
 
 ---
 
-## 2. 集成架构
+## 2. 集成架构（已落地）
 
 ```
-[内核 crate]  hyperscalees-kernels/（标准 Rust 源）
-      │  用 cuda-oxide rustc fork 构建（cargo 子命令 / 直接 rustc）
+[内核 crate]  hyperscalees-kernels/（标准 Rust 源，cuda-oxide 例子里开发）
+      │  用 cuda-oxide rustc fork 构建（`cargo oxide run <example>`）
       ▼
-    PTX 文本（或 cubin）
-      │  编译期 include_bytes! 嵌入
+     PTX 文本（17.7KB，经 llvm-link + opt internalize/globaldce 裁剪）
+      │  编译期 include_str! 嵌入（CONCAT! 保证 NUL 结尾）
       ▼
-[宿主 crate]  hyperscalees/
+[宿主 crate]  hyperscalees/src/oxide.rs
       │  cudarc driver API（已有依赖！）
-      │    CudaContext::load_module(ptx) → Arc<CudaModule>
-      │    module.load_function("kernel_name") → CudaFunction
-      │    f.launch(grid, block, args...)   ← 同 stream，零同步
+      │    cuModuleLoadData(ptx) → cuModuleGetFunction
+      │    cuLaunchKernel(…, args 数组, extra=null)   ← 同 cubecl stream，零同步
       ▼
-    与 burn 张量互操作：复用 cublas.rs 的 raw_ptr() 机制
+    与 burn 张量互操作：复用 cublas.rs 的 as_cube()/raw_ptr() 机制
     （cubecl resolve → 原始设备指针 → 作为内核参数传入）
 ```
 
-**为什么可行（已核实）**：`cudarc 0.19.9` 的 driver API 自带
-`CudaContext::load_module` / `CudaModule::load_function` / `CudaFunction::launch`
-（`cudarc/src/driver/mod.rs` 文档示例，以及 `result::module::load` raw API）。
-与现有 cuBLAS 集成同模式：handle 绑到 cubecl 原始 stream → 天然同流有序、零同步。
+**关键点（全部实测验证）**：
+
+- **launch 顺序**：`cuLaunchKernel(f, gx,gy,gz, bx,by,bz, shared, hStream,
+  kernelParams, extra)`——`kernelParams` 是参数值数组、`extra` 传 `null`；
+  两者写反会报 `CUDA_ERROR_INVALID_VALUE`；
+- **参数对齐**：`kernelParams` 指向的每个参数值需 8 字节对齐（`repr(C, align(8))`
+  包装 u32/f32 标量参数），否则随机 `CUDA_ERROR_INVALID_VALUE`；
+- **PTX 必须 NUL 结尾**（`cuModuleLoadData` 要求）：`include_str!` + `"\0"`；
+- **PTX 必须裁剪**：链接全量 libdevice 后 977KB 的 PTX 会被驱动拒绝
+  （`INVALID_PTX`）；`opt -passes="internalize,globaldce"` 裁掉未用符号 →
+  17.7KB 可加载；
+- **流绑定**：内核在 cubecl 主 stream（vendored `raw_stream`）上启动，与
+  cuBLAS/训练热路径完全同流有序，零同步开销；
+- **向量化写**：`#[repr(C, align(16))] struct F4([f32;4])` + `*mut F4` 写出 →
+  PTX `st.global.v4.b32`；`opt -O3` 后 libdevice 数学内联为 `MUFU sqrt.approx`，
+  无 `call.uni`。
 
 ### 2.1 内核与 burn 张量的数据契约
 
 - burn 张量是 pitched（16 字节行对齐）——内核参数直接传**原始设备指针 + 实际
   strides**（与 `cublas.rs` 的 `raw_ptr`/`cube.meta.strides()` 相同做法）；
 - 内核签名用裸指针 + 显式 stride 参数，不依赖 burn 内部布局；
-- 所有内核在 cubecl 主 stream 上启动（`CudaContext::load_module` 与 cuBLAS 共用
-  同一 context/stream）。
+- 所有内核在 cubecl 主 stream 上启动（与 cuBLAS 共用同一 context/stream）。
+- **PRNG 内核特例**：输出是连续张量，直接按 `总元素数/128 线程` 平铺，
+  每线程 128 元素（32 次 F4 向量写），无需 stride 参数。
 
 ---
 
-## 3. 落地步骤
+## 3. 落地步骤（进度）
 
-### 阶段 A：工具链就绪（阻塞项）
+### 阶段 A：工具链就绪 —— ✅ 完成
 
-1. 获取 cuda-oxide 编译器（Windows x86_64）：
-   - GitHub Releases（v0.2.0 起有预构建二进制）或源码构建；
-   - **本机 GitHub 不可达**（schannel `SEC_E_NO_CREDENTIALS`），需在可联网机器下载
-     release zip 拷贝到本机，或修复网络（见 §6）；
-2. 验证：用官方 hello-gpu 例子产出 PTX；
-3. 确定集成到 cargo 的方式（cuda-oxide 的 `cargo-cuda` 子命令 / `rust-toolchain`
-   切换 / 独立构建脚本产出 PTX 后 include_bytes!）。
+1. 获取 cuda-oxide 编译器：用户提供 `cuda-oxide-0.2.1.zip`（源码包，含
+   `rustc_codegen_cuda` 后端 + `cargo-oxide` 子命令 + 示例），解压到
+   `cuda-oxide-0.2.1/`（**不入库**，外部源码树）；
+2. 本机环境：`RUSTUP_TOOLCHAIN=nightly-2026-04-03`（rustc fork 的前端版本）、
+   LLVM（`LIBCLANG_PATH`）、CUDA 12.8 Toolkit（`CUDA_HOME`）、
+   `LIBNVVM_PATH=...\nvvm\bin\nvvm64_40_0.dll`（cuda-core 运行时校验用）；
+3. Windows 移植补丁（本地改动，不入库）：
+   - `cuda-bindings/build.rs`：`collect_lib_paths` 补 `{toolkit}/lib/x64`；
+   - `cuda-core`：8 处 CUDA 12.8 bindgen 枚举 i32/u32 不匹配 → `as u32` 强转；
+   - `oxide-artifacts`：宿主目标支持 `x86_64-pc-windows-msvc` → COFF 段
+     （`IMAGE_SCN_CNT_INITIALIZED_DATA | MEM_READ | ALIGN_8BYTES`）；
+   - 空 `ffi.lib` 占位（`llvm-ar` 生成，放 `target\debug\deps`，RUSTFLAGS
+     `-L native=` 指过去）；
+   - 后端 DLL 拷贝：`target\debug\deps\rustc_codegen_cuda.dll` →
+     `target\debug\librustc_codegen_cuda.so`（cargo-oxide 按 `.so` 找路径，
+     LoadLibrary 忽略扩展名）；
+4. 验证：vecadd 示例产出 PTX 并在 driver API 下加载启动成功（3 流测试）。
 
-### 阶段 B：最小闭环（PoC）
+### 阶段 B：最小闭环（PoC）—— ✅ 完成
 
-1. 新建 `hyperscalees-kernels` crate：第一个内核 = **噪声生成**（taus+lcg+
-   Box-Muller，等价 `cubek-random::random_normal` 的序列构造）；
-2. 宿主 `hyperscalees/src/oxide.rs`：module 加载封装 + 用 `raw_ptr` 把 CubeTensor
-   指针传入内核；
-3. noise_bench 新增校验：cuda-oxide 内核 vs `random_normal` 分布等价
-   （mean/var 粗检 + 与现有 [0c] 同判据）；
-4. A/B：gen 阶段耗时（当前 ~19ms/epoch）。**目标：≥ 当前内核吞吐（~100GB/s 写）**。
+1. `hyperscalees-kernels/` crate + `cuda-oxide-0.2.1/.../examples/snn_prng`：
+   第一个内核 = **噪声生成**（taus+lcg+Box-Muller，等价
+   `cubek-random::random_normal` 的序列构造），输出写半量反对称噪声张量
+   `(n/2, r, a/b)`；
+2. 宿主 `hyperscalees/src/oxide.rs`：`load_kernel`（cuModuleLoadData+
+   cuModuleGetFunction）+ `launch`（cuLaunchKernel，kernelParams 数组）+ 
+   `prng_normal_half(out, mean, std, device)`（种子取自 `next_seeds()`
+   原子+时间混合，grid = 总线程数/256 块）；
+3. `noise_bench` 新增 `[0c4] oxide_prng_check`：`Tensor::empty` +
+   `oxide::prng_normal_half` → mean≈0 var≈1 断言（通过：mean=-0.001
+   var=1.003）；`[0a]-[0d]` 全部原样通过；
+4. 集成：`cublas.rs::gen_lora_noise_antipodal` 默认走 oxide 内核（
+   `GEN_CUBEK=1` 回退 cubek-random）；训练热路径 epoch 0.17s（同步计时），
+   gen 阶段 ~19-34ms，与 cubek-random 同窗口 A/B 持平（机器漂移 ±75ms
+   内无显著差异）；
+5. **正确性**：3 个 epoch 训练正常收敛（train_acc 0.0812→0.0817，与
+   cubek 路径一致）。
 
 ### 阶段 C：按优先级替换/新增内核
 
-| 优先级 | 内核 | 当前成本 | 目标 |
+| 优先级 | 内核 | 当前成本 | 状态 |
 |---|---|---|---|
-| 1 | 噪声生成（半量） | ~19ms/epoch | 向量化写 + 控制 SFU 指令，≥ 现状 |
-| 2 | einsum 合并 GEMM（瘦 M 长 K） | ~50ms/epoch（cuBLAS TF32） | 定制分块（共享内存 + 寄存器块，K 分片部分和），目标 > cuBLAS |
-| 3 | LIF 融合 | ~8ms/epoch | 8 步 LIF 融合为 1-2 内核 |
-| 4 | 泊松编码融合 | ~9ms/epoch | Uniform+比较 1 内核 |
-| 5 | 半前向 batched matmul | ~45ms/epoch（burn） | 批量小 GEMM 定制内核（谨慎：burn 已优于 cuBLAS，需分块设计） |
+| 1 | 噪声生成（半量） | ~19ms/epoch | ✅ 完成（向量化写 + MUFU，≥ 现状） |
+| 2 | einsum 合并 GEMM（瘦 M 长 K） | ~50ms/epoch（cuBLAS TF32） | ⬜ 待做：定制分块（共享内存 + 寄存器块，K 分片部分和），目标 > cuBLAS |
+| 3 | LIF 融合 | ~8ms/epoch | ⬜ 待做：8 步 LIF 融合为 1-2 内核 |
+| 4 | 泊松编码融合 | ~9ms/epoch | ⬜ 待做：Uniform+比较 1 内核 |
+| 5 | 半前向 batched matmul | ~45ms/epoch（burn） | ⬜ 待做（谨慎：burn 已优于 cuBLAS，需分块设计） |
 
 每步都走同一流程：noise_bench 等价校验 → 训练循环 ACC_PHASE 阶段计时 →
 **同窗口背靠背 A/B epoch 时间**（金标准，见主文档 §6）。
 
 ### 阶段 D：收尾
 
-- 失败的尝试保留记录；保留 `EINSUM=burn` / `EINSUM_FP32=1` 等对照开关；
+- 失败的尝试保留记录；保留 `EINSUM=burn` / `EINSUM_FP32=1` / `GEN_CUBEK=1`
+  等对照开关；
 - 更新 `docs/snn_es_burn_gpu_optimization.md` 的架构表与优化历程。
 
 ---
 
-## 4. 骨架（本分支已搭）
+## 4. 现状（本分支已落地的代码）
 
-- `burn_impl/hyperscalees-kernels/`：候选内核 crate 骨架（标准 Rust 可编译，
-  内核函数带详细注释说明 cuda-oxide 映射；toolchain 就绪后加 `#[kernel]` 注解）；
-- `burn_impl/hyperscalees/src/oxide.rs`：宿主侧 module 加载封装骨架
-  （`OxideModule::load(ptx_bytes)` + `launch`，用 cudarc driver API；
-  当前仅编译通过 + 单元测试占位，PTX 未就位时不加载）；
-- 本文件：集成计划。
+- `burn_impl/hyperscalees-kernels/`：内核 crate 骨架；
+- `burn_impl/hyperscalees-kernels/ptx/prng_normal_half.ptx`：cuda-oxide 编译
+  出的 PRNG 内核 PTX（17.7KB，`include_str!` 嵌入宿主）；
+- `burn_impl/hyperscalees/src/oxide.rs`：`load_kernel` / `launch` /
+  `launch_on_stream` / `kernel_function` / `prng_normal_half`（默认噪声路径）；
+- `burn_impl/hyperscalees/src/cublas.rs`：`gen_lora_noise_antipodal` 默认
+  走 oxide 内核（`GEN_CUBEK=1` 回退）；
+- `burn_impl/hyperscalees/src/bin/noise_bench.rs`：`[0c4] oxide_prng_check`；
+- `burn_impl/hyperscalees/src/bin/oxide_probe.rs`：调试用探测 bin
+  （vecadd 3 流测试 / prng empty/zeros / manual vs oxide launch），保留备查；
+- 内核源码：`cuda-oxide-0.2.1/.../crates/rustc-codegen-cuda/examples/snn_prng/`。
 
 ---
 
-## 5. 风险与备选
+## 5. 风险与备选（实测更新）
 
-| 风险 | 缓解 |
+| 风险 | 缓解 / 实测 |
 |---|---|
-| cuda-oxide 实验性，Windows 支持/内核语言特性不完整 | 阶段 B 先做最小闭环验证；失败则保留现状（已 0.15s，无损失） |
-| 编译链与 cargo workspace 集成复杂（toolchain 切换） | 独立构建脚本产出 PTX + `include_bytes!`，宿主不依赖特殊 toolchain |
-| 内核性能不如预期 | 每个内核都有 noise_bench 等价校验 + 同窗口 A/B；不达标即弃用 |
-| 与 burn 张量生命周期（内存池复用）冲突 | 内核只读指针、不持有句柄；与 cuBLAS 集成同一套 resolve 机制 |
+| cuda-oxide 实验性，Windows 支持/内核语言特性不完整 | ✅ 已打通 Windows x86_64 全链路（见 §7 补丁清单）；语言特性对数值内核够用 |
+| 编译链与 cargo workspace 集成复杂（toolchain 切换） | ✅ 已解决：独立构建脚本产出 PTX + `include_str!`，宿主不依赖特殊 toolchain |
+| 内核性能不如预期 | ✅ PRNG 内核达标（向量化写 + MUFU，无 call.uni，~19ms 与 cubek 持平）；每个新内核仍走 noise_bench 等价校验 + 同窗口 A/B |
+| 与 burn 张量生命周期（内存池复用）冲突 | ✅ 内核只读指针、不持有句柄；与 cuBLAS 集成同一套 resolve 机制 |
+| 驱动/驱动 API 加载失败（INVALID_PTX 等） | ✅ 已踩平：NUL 结尾、internalize/globaldce 裁剪、参数 8 字节对齐、kernelParams/extra 顺序 |
 
 ---
 
-## 6. 本机网络障碍（当前阻塞项）
+## 6. 网络障碍（已解决）
 
-- 本机 HTTPS 全面受限：GitHub `git ls-remote`、crates.io、rsproxy.cn 均
-  `SEC_E_NO_CREDENTIALS` / 连接被关闭（cargo 一直走 `--offline`）；
-- 因此 **cuda-oxide 编译器二进制/源码无法在本机直接获取**；
-- 需要：在可联网机器下载
-  `https://github.com/NVlabs/cuda-oxide/releases`（v0.2.0 起的 Windows 预构建），
-  拷贝到本机后按 §3-阶段 A 继续；或修复本机代理/证书。
+- 本机 HTTPS 受限（GitHub/crates.io `SEC_E_NO_CREDENTIALS`），cargo 走
+  `--offline`；crates.io 源码通过 **rsproxy 稀疏索引**拉取；
+- cuda-oxide 编译器源码由用户提供 zip 拷贝到本机
+  （`cuda-oxide-0.2.1/`，外部源码树，不入库）；
+- git 走 `http.sslBackend=openssl`（schannel 不可用）。
 
 ---
 
-*更新日志：2026-08 分支建立，调研完成；阶段 B 起每步更新。*
+## 7. Windows 构建步骤（复现手册）
+
+### 7.1 环境变量（所有 cuda-oxide 构建）
+
+```
+RUSTUP_TOOLCHAIN=nightly-2026-04-03
+LIBCLANG_PATH=C:\Users\wyl\scoop\apps\llvm\current\bin
+CUDA_HOME=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8
+LIBNVVM_PATH=%CUDA_HOME%\nvvm\bin\nvvm64_40_0.dll
+RUSTFLAGS=-L native=<cuda-oxide>\crates\rustc-codegen-cuda\target\debug\deps
+RUSTC_WRAPPER=<repo>\burn_impl\rustc-shim.exe   （.cmd 版会被 cmd 8191 字符上限截断）
+```
+
+### 7.2 内核编译流水线（以 snn_prng 为例）
+
+```
+cd cuda-oxide-0.2.1\cuda-oxide-0.2.1
+cargo oxide run snn_prng          # → crates\rustc-codegen-cuda\target\nvptx64-nvidia-cuda\debug\examples\snn_prng.ll
+llvm-link -o snn_prng_full.ll snn_prng.ll %CUDA_HOME%\nvvm\libdevice\libdevice.10.bc
+opt -passes="internalize,globaldce" -o snn_prng_trim.ll snn_prng_full.ll
+opt -O3 -o snn_prng_opt.ll snn_prng_trim.ll
+llc -O3 -march=nvptx64 -mcpu=sm_89 -o snn_prng_opt.ptx snn_prng_opt.ll
+copy snn_prng_opt.ptx <repo>\burn_impl\hyperscalees-kernels\ptx\prng_normal_half.ptx
+```
+
+要点：`internalize,globaldce` 必须做（否则全量 libdevice PTX 977KB 被驱动拒载）；
+`llc -mcpu=sm_89` 匹配 RTX 40 系（Ada）。
+
+### 7.3 宿主重建
+
+```
+cd burn_impl
+$env:RUSTC_WRAPPER=''; $env:CARGO_BUILD_RUSTC_WRAPPER=''
+cargo build --offline --release -p hyperscalees --features gpu --bin noise_bench --bin accumulate_train
+```
+
+PTX 变更后重编宿主即生效（`include_str!` 嵌入）。校验：`noise_bench.exe`
+的 `[0c4] oxide_prng_check`；训练收敛 sanity：
+`accumulate_train.exe --batch 60000 --accumulate 5 --rank 64 --num-epochs 3
+--mnist-dir D:\Rust\snn_t1\mnist_data`。
+
+### 7.4 改了后端/运行时（cuda-core、oxide-artifacts 等）后
+
+```
+cd cuda-oxide-0.2.1\cuda-oxide-0.2.1\crates\rustc-codegen-cuda
+cargo build            # 后端 DLL
+copy target\debug\deps\rustc_codegen_cuda.dll target\debug\librustc_codegen_cuda.so
+```
+
+---
+
+*更新日志：2026-08 分支建立，调研完成；阶段 A/B 完成（工具链打通 +
+PRNG 内核集成默认启用）；后续每步更新。*

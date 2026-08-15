@@ -2413,6 +2413,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyperscalees-kernels"
+version = "0.1.0"
+
+[[package]]
 name = "hyperscalees-models"
 version = "0.1.0"
 dependencies = [
