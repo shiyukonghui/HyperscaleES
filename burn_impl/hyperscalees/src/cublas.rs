@@ -539,8 +539,15 @@ pub fn gen_lora_noise_antipodal(
     let dtype = StorageType::Scalar(ElemType::Float(FloatKind::F32));
     assert!(n % 2 == 0, "半量噪声生成要求 n 为偶数，实际 {n}");
 
-    let b_h: Tensor<Cuda, 3> = Tensor::empty([n / 2, r, b], device);
-    let a_h: Tensor<Cuda, 3> = Tensor::empty([n / 2, r, a], device);
+    // 噪声张量以**连续 1D + reshape 3D** 构建：3D Tensor::empty 带 256B 行 pitch
+    // （如 b=100 → 行 stride 128），PRNG 内核扁平写会错位/覆盖不足（未初始化
+    // 内存 → 训练 NaN，见集成文档 §10 bug 4）；1D 连续 + reshape 为零拷贝视图，
+    // strides 连续（[r·b, b, 1]），消费方（einsum 显式 stride / batched matmul）
+    // 均兼容。
+    let b_h: Tensor<Cuda, 3> = Tensor::<Cuda, 1>::empty([n / 2 * r * b], device)
+        .reshape([n / 2, r, b]);
+    let a_h: Tensor<Cuda, 3> = Tensor::<Cuda, 1>::empty([n / 2 * r * a], device)
+        .reshape([n / 2, r, a]);
     // 默认走 cuda-oxide 编译的 PRNG 内核（PTX 经 cudarc 加载，同流零同步）；
     // GEN_CUBEK=1 可切回 cubek-random 内核（对照用）。
     if std::env::var("GEN_CUBEK").map(|v| v == "1").unwrap_or(false) {
@@ -553,8 +560,10 @@ pub fn gen_lora_noise_antipodal(
         cubek_random::random_normal(&client_ah, 0.0, base_sigma, cah.binding(), dtype)
             .expect("A' 前半噪声生成失败");
     } else {
-        crate::oxide::prng_normal_half(&b_h, 0.0, 1.0, device).expect("B' 前半噪声生成失败");
-        crate::oxide::prng_normal_half(&a_h, 0.0, base_sigma, device).expect("A' 前半噪声生成失败");
+        let b_flat: Tensor<Cuda, 1> = b_h.clone().reshape([n / 2 * r * b]);
+        crate::oxide::prng_normal_half(&b_flat, 0.0, 1.0, device).expect("B' 前半噪声生成失败");
+        let a_flat: Tensor<Cuda, 1> = a_h.clone().reshape([n / 2 * r * a]);
+        crate::oxide::prng_normal_half(&a_flat, 0.0, base_sigma, device).expect("A' 前半噪声生成失败");
     }
 
     (a_h, b_h)

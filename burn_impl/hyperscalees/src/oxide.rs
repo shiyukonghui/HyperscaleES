@@ -222,17 +222,21 @@ fn next_seeds() -> [u32; 4] {
     [mix(c), mix(c >> 32), mix(t), mix(t >> 32)]
 }
 
-/// 半量正态填充：`out` (n/2, r, b) 连续张量，填充 `N(mean, std²)`。
+/// 半量正态填充：`out` **1D 连续张量**（n/2·r·b 元素），填充 `N(mean, std²)`。
 ///
 /// 与训练热路径的「半噪声」约定配套（配对由消费方隐含施加）。内核为
 /// cuda-oxide 编译的 PTX，经 cudarc 在 cubecl 主流上启动（同流有序，零同步）。
+///
+/// 注意：必须传**连续 1D** 张量（内核按扁平连续写；3D 张量带 256B 行 pitch，
+/// 扁平写会错位/覆盖不足——见集成文档 §10 bug 3/4）。调用方如需 3D，用
+/// `Tensor::reshape`（零拷贝视图，连续 strides）。
 pub fn prng_normal_half(
-    out: &burn::tensor::Tensor<crate::B, 3>,
+    out: &burn::tensor::Tensor<crate::B, 1>,
     mean: f32,
     std: f32,
     device: &CudaDevice,
 ) -> Result<(), String> {
-    let n_elems = out.shape().dims::<3>().iter().product::<usize>();
+    let n_elems = out.shape().dims::<1>()[0];
     debug_assert_eq!(n_elems % PRNG_ELEMS_PER_THREAD, 0, "元素数需为 128 的整数倍");
     let total_threads = (n_elems / PRNG_ELEMS_PER_THREAD) as u32;
 
@@ -480,8 +484,8 @@ fn lif_kernel(device: &CudaDevice) -> &'static OxideKernel {
 /// `charged = v + (cur - v)·(1/tau_m)`，`spike = (charged ≥ v_th)`，`v = charged·(1-spike)`。
 /// 每线程处理一个 (n, h) 元素沿 T 顺序扫描（无中间张量/逐时间步 launch）。
 ///
-/// 要求：`cur` 连续（innermost stride 1，支持行对齐 pitch 的 dim0 不做假设——
-/// 实际按连续访问）；`v0` 形状 `(n, h)`。
+/// 支持 burn 256B 行对齐 pitch（行 stride ≠ h，如 h=100 f32 → 128；
+/// 内核按 row·s + col 寻址，与泊松内核同机制）。
 pub fn lif_fused(
     cur: &burn::tensor::Tensor<crate::B, 3>,
     v0: &burn::tensor::Tensor<crate::B, 2>,
@@ -503,6 +507,11 @@ pub fn lif_fused(
     let pc = raw_ptr(&cc, device);
     let pv = raw_ptr(&cv, device);
     let po = raw_ptr(&co, device);
+    // 行 stride（元素单位；burn 256B 对齐 pitch）。
+    let s_c = cc.meta.strides()[1] as u32;
+    let s_v = cv.meta.strides()[0] as u32;
+    let s_o = co.meta.strides()[1] as u32;
+    debug_assert_eq!((s_c, s_v), (s_o, s_o), "LIF 行 stride 不一致");
 
     let kernel = lif_kernel(device);
     #[repr(C, align(8))]
@@ -511,14 +520,18 @@ pub fn lif_fused(
     let mut arg_v = A8(pv as *mut c_void);
     let mut arg_o = A8(po as *mut c_void);
     let mut arg_tot = A8(total as u32);
+    let mut arg_h = A8(h as u32);
+    let mut arg_s = A8(s_c);
     let mut arg_t = A8(t as u32);
     let mut arg_tau = A8(tau_m);
     let mut arg_th = A8(v_th);
-    let mut args: [*mut c_void; 7] = [
+    let mut args: [*mut c_void; 9] = [
         &mut arg_c.0 as *mut *mut c_void as *mut c_void,
         &mut arg_v.0 as *mut *mut c_void as *mut c_void,
         &mut arg_o.0 as *mut *mut c_void as *mut c_void,
         &mut arg_tot.0 as *mut u32 as *mut c_void,
+        &mut arg_h.0 as *mut u32 as *mut c_void,
+        &mut arg_s.0 as *mut u32 as *mut c_void,
         &mut arg_t.0 as *mut u32 as *mut c_void,
         &mut arg_tau.0 as *mut f32 as *mut c_void,
         &mut arg_th.0 as *mut f32 as *mut c_void,

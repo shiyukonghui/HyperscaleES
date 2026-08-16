@@ -166,7 +166,8 @@ fn main() {
 
         // [0c4] cuda-oxide PRNG 内核校验：半量正态填充（PTX 经 cudarc 加载），
         // 分布与 cubek-random 一致（不逐位——种子不同；统计同分布即可）。
-        let b_ox: Tensor<B, 3> = Tensor::empty([n_s / 2, r_s, b_s], &device);
+        // 注：PRNG 内核按连续扁平写，必须传 1D 张量（见集成文档 §10 bug 4）。
+        let b_ox: Tensor<B, 1> = Tensor::empty([n_s / 2 * r_s * b_s], &device);
         hyperscalees::oxide::prng_normal_half(&b_ox, 0.0, 1.0, &device).unwrap();
         let oxv = b_ox.into_data().into_vec::<f32>().unwrap();
         let n_ox = oxv.len() as f32;
@@ -367,6 +368,27 @@ fn main() {
                 vo.len()
             );
             assert!(bad == 0, "cuda-oxide LIF 数值错误（bad={bad}）");
+
+            // [0d] 变体 2：非 256B 对齐 h=100（行 pitch 128 ≠ 100）——回归保护
+            //（阶段 C 矩阵测试曾暴露 LIF 扁平访问 bug，见集成文档 §10 bug 3）。
+            let cur_l2: Tensor<B, 3> = Tensor::random(
+                [5, 4000, 100],
+                Distribution::Normal(0.0, 1.0),
+                &device,
+            );
+            let v0_l2: Tensor<B, 2> =
+                Tensor::random([4000, 100], Distribution::Normal(0.0, 1.0), &device);
+            let sp_ox2 = hyperscalees::oxide::lif_fused(&cur_l2, &v0_l2, 20.0, 0.3, &device).unwrap();
+            let sp_ref2 = run_lif(LifParams { tau_m: 20.0, v_th: 0.3 }, cur_l2, v0_l2);
+            let vo2 = sp_ox2.into_data().into_vec::<f32>().unwrap();
+            let vr2 = sp_ref2.into_data().into_vec::<f32>().unwrap();
+            let bad2 = vo2
+                .iter()
+                .zip(vr2.iter())
+                .filter(|(x, y)| (*x - *y).abs() > 1e-6)
+                .count();
+            println!("[0d] oxide_lif_check(h=100) : bad={bad2}/{} (应全 0)", vo2.len());
+            assert!(bad2 == 0, "cuda-oxide LIF h=100 数值错误（bad={bad2}）");
         }
 
         // [0p] cuda-oxide 融合泊松编码统计校验（RNG 与 burn 不同源，仅承诺统计等价）：

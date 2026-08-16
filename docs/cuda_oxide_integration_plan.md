@@ -354,6 +354,23 @@ copy target\debug\deps\rustc_codegen_cuda.dll target\debug\librustc_codegen_cuda
    步（[256,256] 恰好 1024B 对齐所以小测试通过，误导排查）。修复：内核加
    `in_dim` + `s`（行 stride）参数，按 `row·s + col` 寻址，输出步距
    `(total/in_dim)·s`。
+3. **LIF 内核同款 pitch bug（参数矩阵测试暴露）**：3D 张量同样行对齐
+   （`(8,12000,100)` strides = [1536000, 128, 1]，h=100 → s=128）。LIF 内核
+   原为扁平访问 → hidden=100 训练完全不收敛（train_acc 恒 0.0987），
+   独立校验 bad=21046/1M。修复：内核加 `h` + `s` 参数按 `row·s + col` 寻址
+   （h=128 时 s=h，行为不变）。**教训：参数矩阵测试（变 hidden/batch/rank
+   各 500 epoch）是内核边界 bug 的有效暴露手段；测试脚本必须确认参数真实
+   生效（[env] 行 + PowerShell 数组传参）。**
+4. **PRNG 内核扁平写覆盖不足（hidden=100 训练 NaN 的根因）**：噪声张量
+   `Tensor::empty([n/2, r, b])` 3D 带行 pitch（b=100 → s=128），PRNG 内核按
+   连续扁平写（每线程 128 元素）→ 写入错位且尾部 `(s-b)/s` 区域**未初始化**
+   （池内存可能 NaN）→ 前向/梯度 NaN → 权重 NaN → 训练永久停滞（train_acc
+   恒 0.098 ≈ argmax(NaN) 退化）。784 基线"正常"是巧合（12.5% 尾部垃圾多为
+   旧数据而非 NaN，ES 对噪声排列鲁棒）。修复：噪声张量改为
+   **连续 1D empty + `reshape` 3D**（零拷贝视图，strides 连续 [r·b, b, 1]）；
+   `prng_normal_half` 签名收紧为 `Tensor<B,1>` 杜绝误用。修复后 hidden=100
+   训练正常收敛。einsum a=100 曾疑为 bug，实测 maxdiff ~7e-3 相对（TF32
+   参考 vs FP32 内核的正常长 K 累加差），非 bug。
 
 ### 10.3 校验与性能（同窗口）
 
