@@ -12,3 +12,4 @@ logs/
 .pylibs/
 data
 **/target/
+cuda-oxide-0.2.1/
