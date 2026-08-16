@@ -28,13 +28,19 @@ mod kernels {
     use super::*;
 
     /// 融合 LIF 扫描：每线程处理一个 (n, h) 元素，沿 T 顺序扫描。
+    ///
+    /// 布局（burn 256B 行对齐 pitch）：`cur`/`out` 行 stride 可能 ≠ h
+    /// （如 h=100 f32 = 400B → pitch 128；h=128 f32 = 512B 恰好对齐 → s=h），
+    /// 按 (row·s + col) 寻址，不做扁平假设（与 poisson 内核同机制，见文档 §10）。
     #[kernel]
     #[launch_bounds(256)]
     pub fn lif_fused(
-        cur: *const f32, // (T, total) 行主序连续
-        v0: *const f32,  // (total,)
-        out: *mut f32,   // (T, total)，写 0/1
+        cur: *const f32, // (T, n, h) 行主序，行 stride = s
+        v0: *const f32,  // (n, h) 行主序，行 stride = s
+        out: *mut f32,   // (T, n, h) 行主序，行 stride = s，写 0/1
         total: u32,      // n * h
+        h: u32,          // 每行元素数
+        s: u32,          // 行 stride（元素单位，burn 256B 对齐 pitch）
         t: u32,          // 时间步 T
         tau_m: f32,
         v_th: f32,
@@ -43,17 +49,21 @@ mod kernels {
         if idx >= total as usize {
             return;
         }
+        let row = idx / h as usize;
+        let col = idx % h as usize;
+        let base = row * s as usize + col;
+        let step = (total as usize / h as usize) * s as usize; // n·s（每时间步偏移）
         let leak = 1.0f32 / tau_m;
-        let mut v = unsafe { *v0.add(idx) };
+        let mut v = unsafe { *v0.add(base) };
         let mut tt = 0usize;
         while tt < t as usize {
-            let c = unsafe { *cur.add(tt * total as usize + idx) };
+            let c = unsafe { *cur.add(tt * step + base) };
             // FMA 友好：v + (c - v)·leak
             let charged = v + (c - v) * leak;
             let spike = if charged >= v_th { 1.0f32 } else { 0.0f32 };
             v = charged * (1.0f32 - spike);
             unsafe {
-                *out.add(tt * total as usize + idx) = spike;
+                *out.add(tt * step + base) = spike;
             }
             tt += 1;
         }
