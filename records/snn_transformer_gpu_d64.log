@@ -1,0 +1,16 @@
+﻿[env] backend=cuda batch=60000 accumulate=8 chunk=7500 rank=16 T=8 d_model=64 heads=4 blocks=2
+[model] params=37 mm(lora)=34 dense=3
+[data] train=60000 test=10000 dir=D:\Rust\snn_t1\mnist_data
+epoch     0 | train_acc 0.0994 | best_train 0.0994 | val_acc 0.0948 | best_val 0.0948 | 157.28s | cum 157.3s
+epoch    10 | train_acc 0.0990 | best_train 0.1018 | 14.48s | cum 299.0s
+epoch    20 | train_acc 0.1008 | best_train 0.1018 | 14.00s | cum 438.9s
+epoch    30 | train_acc 0.1004 | best_train 0.1018 | 13.89s | cum 580.2s
+epoch    40 | train_acc 0.0993 | best_train 0.1018 | 14.21s | cum 720.8s
+epoch    50 | train_acc 0.1001 | best_train 0.1018 | val_acc 0.1058 | best_val 0.1058 | 13.85s | cum 860.9s
+epoch    60 | train_acc 0.0990 | best_train 0.1018 | 15.88s | cum 1012.2s
+epoch    70 | train_acc 0.1007 | best_train 0.1038 | 15.48s | cum 1168.2s
+epoch    80 | train_acc 0.0993 | best_train 0.1038 | 15.43s | cum 1324.4s
+epoch    90 | train_acc 0.1020 | best_train 0.1038 | 15.61s | cum 1480.5s
+epoch   100 | train_acc 0.1000 | best_train 0.1038 | val_acc 0.1058 | best_val 0.1058 | 15.77s | cum 1636.1s
+epoch   110 | train_acc 0.1009 | best_train 0.1038 | 15.40s | cum 1791.9s
+epoch   120 | train_acc 0.1006 | best_train 0.1038 | 15.02s | cum 1937.8s

@@ -1,0 +1,44 @@
+﻿cargo : warning: unused import: `normal_antipodal::*`
+所在位置 行:1 字符: 434
++ ... lyContinue; cargo build --release -p hyperscalees --features gpu --bi ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: unused...l_antipodal::*`:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  --> vendor\cubek-random\src\lib.rs:11:9
+   |
+11 | pub use normal_antipodal::*;
+   |         ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cubek-random` (lib) generated 1 warning (run `cargo fix --lib -p cubek-random` to apply 1 suggestion)
+warning: unused variable: `t`
+   --> hyperscalees-models\src\snn_transformer.rs:350:14
+    |
+350 |         let [t, n, in_dim] = x.dims();
+    |              ^ help: if this is intentional, prefix it with an underscore: `_t`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `n`
+   --> hyperscalees-models\src\snn_transformer.rs:350:17
+    |
+350 |         let [t, n, in_dim] = x.dims();
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_n`
+
+warning: unused variable: `d_model`
+   --> hyperscalees-models\src\snn_transformer.rs:357:13
+    |
+357 |         let d_model = self.in_q.weight.dims()[0];
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_d_model`
+
+warning: unused variable: `device`
+   --> hyperscalees-models\src\snn_transformer.rs:358:13
+    |
+358 |         let device = x.device();
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_device`
+
+warning: `hyperscalees-models` (lib) generated 4 warnings (run `cargo fix --lib -p hyperscalees-models` to apply 4 sugg
+estions)
+    Finished `release` profile [optimized] target(s) in 1.15s

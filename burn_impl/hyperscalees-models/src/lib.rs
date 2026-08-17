@@ -9,5 +9,6 @@
 pub mod common;
 pub mod snn;
 pub mod snn_attention;
+pub mod snn_transformer;
 pub mod rl;
 pub mod llm;
